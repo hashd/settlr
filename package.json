@@ -1,0 +1,24 @@
+{
+  "name": "settlr",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A modern expense sharing app",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"yarn dev:web\" \"yarn dev:api\"",
+    "dev:web": "yarn workspace @settlr/web dev",
+    "dev:api": "yarn workspace @settlr/api dev",
+    "build": "yarn workspaces run build",
+    "lint": "yarn workspaces run lint",
+    "clean": "yarn workspaces run clean"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "@settlr/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "clean": "rm -rf dist node_modules"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.1.0",
+    "graphql": "^16.9.0",
+    "graphql-yoga": "^5.10.6",
+    "@pothos/core": "^4.3.0",
+    "@pothos/plugin-prisma": "^4.2.0",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.10.2",
+    "prisma": "^6.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "~5.6.3"
+  }
+}
