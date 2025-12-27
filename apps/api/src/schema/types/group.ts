@@ -46,6 +46,54 @@ builder.objectType(Group, {
         });
       },
     }),
+    // User's net balance in this group (positive = owed to them, negative = they owe)
+    userBalance: t.int({
+      nullable: true,
+      resolve: async (group, _args, ctx) => {
+        if (!ctx.userId) return null;
+
+        const [expenses, settlements] = await Promise.all([
+          prisma.expense.findMany({
+            where: { groupId: group.id },
+            include: { shares: true },
+          }),
+          prisma.settlement.findMany({
+            where: { groupId: group.id },
+          }),
+        ]);
+
+        let balance = 0;
+
+        // Calculate from expenses
+        for (const e of expenses) {
+          if (e.paidById === ctx.userId) {
+            // User paid - add amount they're owed
+            for (const s of e.shares) {
+              if (s.userId !== ctx.userId) {
+                balance += s.amount;
+              }
+            }
+          } else {
+            // Someone else paid - subtract user's share
+            const userShare = e.shares.find((s) => s.userId === ctx.userId);
+            if (userShare) {
+              balance -= userShare.amount;
+            }
+          }
+        }
+
+        // Adjust for settlements
+        for (const s of settlements) {
+          if (s.payerId === ctx.userId) {
+            balance += s.amount; // User paid a debt
+          } else if (s.receiverId === ctx.userId) {
+            balance -= s.amount; // User received a payment
+          }
+        }
+
+        return balance;
+      },
+    }),
   }),
 });
 
@@ -166,6 +214,12 @@ builder.queryField("groupBalances", (t) =>
       groupId: t.arg.string({ required: true }),
     },
     resolve: async (_root, args) => {
+      // Fetch the group to check simplifyDebts setting
+      const group = await prisma.group.findUnique({
+        where: { id: args.groupId },
+        select: { simplifyDebts: true },
+      });
+
       const expenses = await prisma.expense.findMany({
         where: { groupId: args.groupId },
         include: { shares: true },
@@ -175,7 +229,7 @@ builder.queryField("groupBalances", (t) =>
         where: { groupId: args.groupId },
       });
 
-      // Calculate Net Balances for simplification
+      // Calculate Net Balances
       const userBalances: Record<string, number> = {};
 
       const add = (id: string, amt: number) => {
@@ -184,7 +238,9 @@ builder.queryField("groupBalances", (t) =>
 
       // Process expenses
       for (const e of expenses) {
-        add(e.paidById, e.amount);
+        if (e.paidById) {
+          add(e.paidById, e.amount);
+        }
         for (const s of e.shares) {
           add(s.userId, -s.amount);
         }
@@ -196,41 +252,100 @@ builder.queryField("groupBalances", (t) =>
         add(s.receiverId, -s.amount);
       }
 
-      const debtors: { id: string; amount: number }[] = [];
-      const creditors: { id: string; amount: number }[] = [];
+      // If simplifyDebts is enabled (default true), use greedy algorithm
+      if (group?.simplifyDebts !== false) {
+        const debtors: { id: string; amount: number }[] = [];
+        const creditors: { id: string; amount: number }[] = [];
 
-      for (const [id, amt] of Object.entries(userBalances)) {
-        if (amt < -1) debtors.push({ id, amount: amt });
-        if (amt > 1) creditors.push({ id, amount: amt });
-      }
-
-      // Greedy matching
-      debtors.sort((a, b) => a.amount - b.amount); // Ascending (largest debt first: -100)
-      creditors.sort((a, b) => b.amount - a.amount); // Descending (largest credit first: 100)
-
-      const balances: { owerId: string; oweeId: string; amount: number }[] = [];
-      let i = 0;
-      let j = 0;
-
-      while (i < debtors.length && j < creditors.length) {
-        const debtor = debtors[i];
-        const creditor = creditors[j];
-
-        const amount = Math.min(Math.abs(debtor.amount), creditor.amount);
-
-        if (amount > 0) {
-          balances.push({
-            owerId: debtor.id,
-            oweeId: creditor.id,
-            amount: Math.round(amount),
-          });
+        for (const [id, amt] of Object.entries(userBalances)) {
+          if (amt < -1) debtors.push({ id, amount: amt });
+          if (amt > 1) creditors.push({ id, amount: amt });
         }
 
-        debtor.amount += amount;
-        creditor.amount -= amount;
+        // Greedy matching for minimum transactions
+        debtors.sort((a, b) => a.amount - b.amount);
+        creditors.sort((a, b) => b.amount - a.amount);
 
-        if (Math.abs(debtor.amount) < 1) i++;
-        if (creditor.amount < 1) j++;
+        const balances: { owerId: string; oweeId: string; amount: number }[] =
+          [];
+        let i = 0;
+        let j = 0;
+
+        while (i < debtors.length && j < creditors.length) {
+          const debtor = debtors[i];
+          const creditor = creditors[j];
+
+          const amount = Math.min(Math.abs(debtor.amount), creditor.amount);
+
+          if (amount > 0) {
+            balances.push({
+              owerId: debtor.id,
+              oweeId: creditor.id,
+              amount: Math.round(amount),
+            });
+          }
+
+          debtor.amount += amount;
+          creditor.amount -= amount;
+
+          if (Math.abs(debtor.amount) < 1) i++;
+          if (creditor.amount < 1) j++;
+        }
+
+        return balances;
+      }
+
+      // If simplifyDebts is disabled, calculate direct pairwise balances
+      // This tracks who owes whom directly from each expense
+      const pairwiseBalances: Record<string, Record<string, number>> = {};
+
+      const addPairwise = (from: string, to: string, amt: number) => {
+        if (!pairwiseBalances[from]) pairwiseBalances[from] = {};
+        pairwiseBalances[from][to] = (pairwiseBalances[from][to] || 0) + amt;
+      };
+
+      // Re-process for pairwise
+      for (const e of expenses) {
+        if (!e.paidById) continue;
+        for (const s of e.shares) {
+          if (s.userId !== e.paidById) {
+            addPairwise(s.userId, e.paidById, s.amount);
+          }
+        }
+      }
+
+      // Adjust for settlements
+      for (const s of settlements) {
+        addPairwise(s.receiverId, s.payerId, s.amount);
+      }
+
+      // Consolidate and return
+      const balances: { owerId: string; oweeId: string; amount: number }[] = [];
+      const processed = new Set<string>();
+
+      for (const [from, toMap] of Object.entries(pairwiseBalances)) {
+        for (const [to, amt] of Object.entries(toMap)) {
+          const key = [from, to].sort().join("-");
+          if (processed.has(key)) continue;
+          processed.add(key);
+
+          const reverse = pairwiseBalances[to]?.[from] || 0;
+          const net = amt - reverse;
+
+          if (net > 1) {
+            balances.push({
+              owerId: from,
+              oweeId: to,
+              amount: Math.round(net),
+            });
+          } else if (net < -1) {
+            balances.push({
+              owerId: to,
+              oweeId: from,
+              amount: Math.round(Math.abs(net)),
+            });
+          }
+        }
       }
 
       return balances;
@@ -441,6 +556,7 @@ builder.mutationField("updateGroup", (t) =>
       name: t.arg.string(),
       icon: t.arg.string(),
       category: t.arg({ type: GroupCategory }),
+      simplifyDebts: t.arg.boolean(),
     },
     resolve: async (_root, args, ctx) => {
       if (!ctx.userId) throw new Error("Not authenticated");
@@ -448,7 +564,7 @@ builder.mutationField("updateGroup", (t) =>
       // Check permission: group admin
       const member = await prisma.groupMember.findUnique({
         where: {
-          groupId_userId: {
+          userId_groupId: {
             groupId: args.id,
             userId: ctx.userId,
           },
@@ -465,6 +581,7 @@ builder.mutationField("updateGroup", (t) =>
           name: args.name ?? undefined,
           icon: args.icon ?? undefined,
           category: args.category ?? undefined,
+          simplifyDebts: args.simplifyDebts ?? undefined,
         },
       });
 
@@ -477,6 +594,7 @@ builder.mutationField("updateGroup", (t) =>
           name: args.name,
           icon: args.icon,
           category: args.category,
+          simplifyDebts: args.simplifyDebts,
         },
       });
 

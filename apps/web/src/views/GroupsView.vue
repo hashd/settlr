@@ -1,839 +1,611 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useQuery, useMutation } from '@vue/apollo-composable'
 import { GROUPS_QUERY, CREATE_GROUP_MUTATION } from '@/graphql/operations'
-import Logo from '@/components/ui/Logo.vue'
+import { useToastStore } from '@/stores/toast'
 
 interface Group {
   id: string
   name: string
   icon: string
   category: string
+  createdAt: string
+  expenseCount: number
+  userBalance: number | null
   members: { id: string; user: { id: string; name: string } }[]
 }
 
 const { result, loading, refetch } = useQuery<{ groups: Group[] }>(GROUPS_QUERY)
 const { mutate: createGroup, loading: creating } = useMutation(CREATE_GROUP_MUTATION)
+const toast = useToastStore()
 
-const showNewGroupModal = ref(false)
-const newGroupName = ref('')
-const newGroupIcon = ref('👥')
-const newGroupCategory = ref('OTHER')
-const isVisible = ref(false)
+const visible = ref(false)
+const showModal = ref(false)
+const formName = ref('')
+const formIcon = ref('👥')
+const formCategory = ref('OTHER')
 
-const icons = ['👥', '🏠', '✈️', '💑', '🍕', '🎉', '💼', '🎮', '🎵', '⚽', '🍔', '🍺', '🛍️', '🚵', '🎞️', '🧴', '🎓', '🏖️', '⛰️', '🚗', '🐱', '🐶', '💡', '💰', '📈', '🏡', '🏢', '🚕', '🍣', '🍷', '🎨', '📚', '💪', '🦷', '🍼', '🎭', '🎤', '🧗', '🏄', '🚀']
+// Filter & Sort
+const search = ref('')
+const sortBy = ref<'name' | 'recent' | 'balance'>('recent')
+const filterCat = ref('')
+
+const groups = computed(() => {
+  let list = result.value?.groups || []
+  
+  // Search filter
+  if (search.value) {
+    const q = search.value.toLowerCase()
+    list = list.filter(g => g.name.toLowerCase().includes(q))
+  }
+  
+  // Category filter
+  if (filterCat.value) {
+    list = list.filter(g => g.category === filterCat.value)
+  }
+  
+  // Sort
+  list = [...list].sort((a, b) => {
+    if (sortBy.value === 'name') return a.name.localeCompare(b.name)
+    if (sortBy.value === 'balance') return Math.abs(b.userBalance || 0) - Math.abs(a.userBalance || 0)
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  })
+  
+  return list
+})
+
+const icons = ['👥', '🏠', '✈️', '💑', '🍕', '🎉', '💼', '🎮', '⚽', '🍔', '🍺', '🛍️']
 const categories = [
-  { value: 'FRIENDS', label: 'Friends', icon: '👥' },
-  { value: 'HOME', label: 'Home', icon: '🏠' },
-  { value: 'TRIP', label: 'Trip', icon: '✈️' },
-  { value: 'COUPLE', label: 'Couple', icon: '💑' },
-  { value: 'WORK', label: 'Work', icon: '💼' },
-  { value: 'FAMILY', label: 'Family', icon: '👨‍👩‍👧‍👦' },
-  { value: 'STUDENT', label: 'Student', icon: '🎓' },
-  { value: 'OFFICE', label: 'Office', icon: '🏢' },
-  { value: 'CLUB', label: 'Club', icon: '⚽' },
-  { value: 'DINING', label: 'Dining', icon: '🍣' },
-  { value: 'HOBBY', label: 'Hobby', icon: '🎨' },
-  { value: 'OTHER', label: 'Other', icon: '📁' },
+  { value: 'FRIENDS', label: 'Friends' },
+  { value: 'HOME', label: 'Home' },
+  { value: 'TRIP', label: 'Trip' },
+  { value: 'COUPLE', label: 'Couple' },
+  { value: 'WORK', label: 'Work' },
+  { value: 'OTHER', label: 'Other' },
 ]
 
-function getInitials(name: string) {
-  return name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2)
+function formatBalance(bal: number | null) {
+  if (!bal || bal === 0) return null
+  const formatted = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Math.abs(bal) / 100)
+  return bal > 0 ? `+${formatted}` : `-${formatted}`
 }
 
-async function handleCreateGroup() {
-  if (!newGroupName.value.trim()) return
-  
+async function handleCreate() {
+  if (!formName.value.trim()) return
   try {
-    await createGroup({
-      name: newGroupName.value,
-      icon: newGroupIcon.value,
-      category: newGroupCategory.value,
-    })
-    
-    showNewGroupModal.value = false
-    newGroupName.value = ''
-    newGroupIcon.value = '👥'
-    newGroupCategory.value = 'OTHER'
+    await createGroup({ name: formName.value, icon: formIcon.value, category: formCategory.value })
+    showModal.value = false
+    formName.value = ''
+    formIcon.value = '👥'
+    formCategory.value = 'OTHER'
     refetch()
-  } catch (e) {
-    console.error('Failed to create group:', e)
+    toast.success('Group created!')
+  } catch (e: any) {
+    toast.error(e.message || 'Failed')
   }
 }
 
-onMounted(() => {
-  setTimeout(() => {
-    isVisible.value = true
-  }, 100)
-})
+onMounted(() => setTimeout(() => visible.value = true, 50))
 </script>
 
 <template>
-  <div class="groups-page" :class="{ visible: isVisible }">
-    <!-- Header Area -->
-    <header class="page-header container">
-      <div class="header-content">
-        <div class="header-text">
-          <h1 class="page-title">Your <span class="premium-text">Circles</span></h1>
-          <p class="page-desc">The high-fidelity way to share expenses.</p>
-        </div>
-        <button class="create-action glass" @click="showNewGroupModal = true">
-          <div class="plus-orb">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-              <path d="M12 5v14M5 12h14" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <span>New Group</span>
+  <div class="page" :class="{ visible }">
+    <div class="container">
+      
+      <!-- Header -->
+      <header class="header">
+        <h1>Groups</h1>
+        <button class="add-btn" @click="showModal = true">
+          + New
         </button>
-      </div>
-    </header>
+      </header>
 
-    <!-- Main Content -->
-    <main class="main-stack container">
-      <!-- Loading state -->
-      <div v-if="loading" class="stack-loading">
-        <div v-for="i in 4" :key="i" class="skeleton-wide-card glass">
-          <div class="skeleton-top">
-            <div class="skeleton-circle"></div>
-            <div class="skeleton-line-long"></div>
-          </div>
-          <div class="skeleton-bottom">
-            <div class="skeleton-line-short"></div>
-            <div class="skeleton-line-short"></div>
-          </div>
+      <!-- Filter Bar -->
+      <div class="filter-bar" v-if="!loading && (result?.groups?.length || 0) > 0">
+        <div class="search-wrap">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+          </svg>
+          <input v-model="search" type="text" placeholder="Search groups..." class="search-input" />
+        </div>
+        <div class="filter-controls">
+          <select v-model="filterCat" class="filter-select">
+            <option value="">All types</option>
+            <option v-for="c in categories" :key="c.value" :value="c.value">{{ c.label }}</option>
+          </select>
+          <select v-model="sortBy" class="filter-select">
+            <option value="recent">Recent</option>
+            <option value="name">A-Z</option>
+            <option value="balance">Balance</option>
+          </select>
         </div>
       </div>
 
-      <!-- Empty state -->
-      <Transition name="blur-fade">
-        <div v-if="!loading && !result?.groups?.length" class="empty-billboard glass">
-          <div class="empty-icon-wrap">
-            <div class="glow-orb"></div>
-            <Logo size="64" :hideText="true" />
-          </div>
-          <h2 class="empty-title">Pure transparency begins here</h2>
-          <p class="empty-desc">Create your first group and experience the new standard of expense management.</p>
-          <button class="btn btn-primary" @click="showNewGroupModal = true">
-            <span>Launch Your First Circle</span>
-          </button>
+      <!-- Loading -->
+      <div v-if="loading" class="card">
+        <div v-for="i in 4" :key="i" class="row skeleton">
+          <div class="sk-icon"></div>
+          <div class="sk-text"><div class="sk-line"></div><div class="sk-line sm"></div></div>
         </div>
-      </Transition>
+      </div>
 
-      <!-- Sophisticated Vertical Stack -->
-      <TransitionGroup name="stack-list" tag="div" class="stack-list" v-if="result?.groups?.length">
+      <!-- Empty -->
+      <div v-else-if="!result?.groups?.length" class="empty-card">
+        <span class="empty-emoji">✨</span>
+        <h2>No groups yet</h2>
+        <p>Create a group to start splitting expenses.</p>
+        <button class="cta" @click="showModal = true">Create Group</button>
+      </div>
+
+      <!-- No Results -->
+      <div v-else-if="!groups.length" class="empty-card">
+        <span class="empty-emoji">🔍</span>
+        <h2>No matches</h2>
+        <p>Try a different search or filter.</p>
+        <button class="cta" @click="search = ''; filterCat = ''">Clear Filters</button>
+      </div>
+
+      <!-- Groups -->
+      <div v-else class="card">
         <router-link 
-          v-for="(group, index) in result.groups" 
-          :key="group.id"
-          :to="`/groups/${group.id}`"
-          class="premium-list-card glass-layered"
-          :style="{ '--delay': `${index * 100}ms` }"
+          v-for="g in groups" 
+          :key="g.id" 
+          :to="`/groups/${g.id}`"
+          class="row"
         >
-          <div class="card-inner">
-            <!-- Left: Visual Identity -->
-            <div class="card-visual">
-              <div class="group-mark">
-                <span class="emoji">{{ group.icon }}</span>
-                <div class="category-ring" :data-category="group.category"></div>
-              </div>
-            </div>
-
-            <!-- Center: Core Info -->
-            <div class="card-info">
-              <div class="group-header">
-                <h3 class="group-name">{{ group.name }}</h3>
-                <span class="category-badge">{{ group.category.toLowerCase() }}</span>
-              </div>
-              <p class="group-activity">Total shared activity in this circle</p>
-            </div>
-
-            <!-- Right: Metadata & Members -->
-            <div class="card-meta">
-              <div class="member-pile">
-                <div 
-                  v-for="(member, mIdx) in group.members.slice(0, 4)" 
-                  :key="member.id"
-                  class="member-avatar"
-                  :style="{ zIndex: 10 - mIdx, transform: `translateX(${-mIdx * 8}px)` }"
-                  :title="member.user.name"
-                >
-                  {{ getInitials(member.user.name) }}
-                </div>
-                <div 
-                  v-if="group.members.length > 4" 
-                  class="member-avatar more"
-                  :style="{ zIndex: 5, transform: `translateX(${-32}px)` }"
-                >
-                  +{{ group.members.length - 4 }}
-                </div>
-              </div>
-              <div class="card-cta">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M5 12h14M12 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </div>
-            </div>
+          <span class="row-icon">{{ g.icon }}</span>
+          <div class="row-body">
+            <span class="row-name">{{ g.name }}</span>
+            <span class="row-sub">{{ g.members.length }} member{{ g.members.length !== 1 ? 's' : '' }} · {{ g.expenseCount }} expense{{ g.expenseCount !== 1 ? 's' : '' }}</span>
+          </div>
+          <div class="row-end">
+            <span 
+              v-if="g.userBalance && g.userBalance !== 0" 
+              :class="['row-balance', g.userBalance > 0 ? 'positive' : 'negative']"
+            >
+              {{ formatBalance(g.userBalance) }}
+            </span>
+            <span v-else class="row-settled">settled</span>
           </div>
         </router-link>
-      </TransitionGroup>
-    </main>
-
-    <!-- Refined Modal -->
-    <Transition name="modal-bounce">
-      <div v-if="showNewGroupModal" class="modal-backdrop" @click.self="showNewGroupModal = false">
-        <div class="premium-island glass-layered">
-          <div class="modal-head">
-            <h2 class="modal-title">New <span class="premium-text">Circle</span></h2>
-            <button class="close-orb" @click="showNewGroupModal = false">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                <path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/>
-              </svg>
-            </button>
-          </div>
-          
-          <form @submit.prevent="handleCreateGroup" class="modal-body">
-            <div class="field">
-              <label>Circle Name</label>
-              <input 
-                v-model="newGroupName"
-                type="text"
-                class="glass-input"
-                placeholder="Ex. European Adventure 2024"
-                required
-                autofocus
-              />
-            </div>
-            
-            <div class="field">
-              <label>Circle Visual</label>
-              <div class="icon-selector-grid">
-                <button
-                  v-for="icon in icons"
-                  :key="icon"
-                  type="button"
-                  :class="['icon-orb', { active: newGroupIcon === icon }]"
-                  @click="newGroupIcon = icon"
-                >
-                  {{ icon }}
-                </button>
-              </div>
-            </div>
-            
-            <div class="field">
-              <label>Designation</label>
-              <div class="category-pill-grid">
-                <button
-                  v-for="cat in categories"
-                  :key="cat.value"
-                  type="button"
-                  :class="['cat-pill-item', { active: newGroupCategory === cat.value }]"
-                  @click="newGroupCategory = cat.value"
-                >
-                  <span class="pill-icon">{{ cat.icon }}</span>
-                  <span class="pill-label">{{ cat.label }}</span>
-                </button>
-              </div>
-            </div>
-            
-            <div class="modal-foot">
-              <button type="submit" class="cta-launch" :disabled="creating || !newGroupName.trim()">
-                <div v-if="creating" class="loader-pulse"></div>
-                <span>{{ creating ? 'Creating...' : 'Initialize Circle' }}</span>
-              </button>
-            </div>
-          </form>
-        </div>
       </div>
-    </Transition>
+
+    </div>
+
+    <!-- FAB -->
+    <button class="fab" @click="showModal = true">+</button>
+
+    <!-- Modal -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showModal" class="overlay" @click.self="showModal = false">
+          <div class="modal">
+            <div class="modal-head">
+              <h2>New Group</h2>
+              <button class="close" @click="showModal = false">✕</button>
+            </div>
+            <form @submit.prevent="handleCreate" class="modal-body">
+              <input v-model="formName" placeholder="Group name" class="input" required autofocus />
+              
+              <label class="label">Icon</label>
+              <div class="icon-row">
+                <button 
+                  v-for="ic in icons" :key="ic" type="button"
+                  :class="['icon-btn', { active: formIcon === ic }]"
+                  @click="formIcon = ic"
+                >{{ ic }}</button>
+              </div>
+
+              <label class="label">Type</label>
+              <div class="cat-row">
+                <button 
+                  v-for="c in categories" :key="c.value" type="button"
+                  :class="['cat-btn', { active: formCategory === c.value }]"
+                  @click="formCategory = c.value"
+                >{{ c.label }}</button>
+              </div>
+
+              <button type="submit" class="submit" :disabled="creating || !formName.trim()">
+                {{ creating ? 'Creating...' : 'Create' }}
+              </button>
+            </form>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
-.groups-page {
+.page {
   min-height: 100vh;
-  padding-top: 80px;
-  padding-bottom: 120px;
+  padding: 100px 24px 120px;
   opacity: 0;
-  transform: translateY(10px);
-  transition: all 0.6s var(--ease-out-expo);
+  transition: opacity 0.4s ease;
+}
+.page.visible { opacity: 1; }
+
+.container {
+  max-width: 600px;
+  margin: 0 auto;
 }
 
-.groups-page.visible {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.page-header {
-  margin-bottom: 60px;
-}
-
-.header-content {
+/* Header */
+.header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin-bottom: 16px;
 }
 
-.page-title {
-  font-size: 3rem;
-  font-weight: 850;
-  letter-spacing: -0.05em;
-  margin-bottom: 4px;
+.header h1 {
+  font-size: 1.5rem;
+  font-weight: 800;
 }
 
-.premium-text {
-  background: linear-gradient(135deg, var(--color-primary) 0%, #f472b6 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+.add-btn {
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.page-desc {
-  font-size: 1.125rem;
+.add-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+/* Filter Bar */
+.filter-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.search-wrap {
+  flex: 1;
+  min-width: 180px;
+  position: relative;
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-dimmed);
+  pointer-events: none;
+}
+
+.search-input {
+  width: 100%;
+  padding: 10px 12px 10px 38px;
+  background: white;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.filter-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.filter-select {
+  padding: 10px 12px;
+  background: white;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px;
+  font-size: 0.8125rem;
   font-weight: 500;
-  color: var(--color-text-muted);
+  cursor: pointer;
+  min-width: 90px;
 }
 
-.create-action {
+.filter-select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* Card */
+.card {
+  background: white;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(0,0,0,0.04);
+}
+
+/* Row */
+.row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 24px 10px 10px;
-  border-radius: 40px;
-  cursor: pointer;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  font-weight: 700;
-  color: var(--color-text);
-  transition: all 0.3s var(--ease-out-back);
-}
-
-.create-action:hover {
-  transform: translateY(-4px) scale(1.02);
-  background: white;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-}
-
-.plus-orb {
-  width: 36px;
-  height: 36px;
-  background: var(--color-text);
-  color: white;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* Stack Layout */
-.main-stack {
-  max-width: 800px !important;
-}
-
-.stack-list {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.premium-list-card {
-  display: block;
+  padding: 14px 16px;
   text-decoration: none;
   color: inherit;
-  border-radius: 24px;
-  padding: 24px;
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  animation: slide-up-fade 0.8s var(--ease-out-expo) backwards;
-  animation-delay: var(--delay);
+  transition: background 0.15s;
 }
 
-@keyframes slide-up-fade {
-  from { opacity: 0; transform: translateY(40px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+.row:not(:last-child) { border-bottom: 1px solid rgba(0,0,0,0.04); }
+.row:hover { background: rgba(0,0,0,0.015); }
 
-.premium-list-card:hover {
-  transform: translateY(-6px) scale(1.015);
-  border-color: rgba(99, 102, 241, 0.4);
-  box-shadow: 
-    0 20px 40px -10px rgba(0, 0, 0, 0.1),
-    0 0 0 1px rgba(99, 102, 241, 0.1);
-}
-
-.card-inner {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-}
-
-.card-visual {
-  position: relative;
-}
-
-.group-mark {
-  width: 72px;
-  height: 72px;
-  background: white;
-  border-radius: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 2.25rem;
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
-  transition: all 0.5s var(--ease-out-back);
-}
-
-.premium-list-card:hover .group-mark {
-  transform: rotate(-5deg) scale(1.1);
-}
-
-.category-ring {
-  position: absolute;
-  inset: -4px;
-  border: 2px solid transparent;
-  border-radius: 24px;
-  opacity: 0.3;
-}
-
-.card-info {
-  flex: 1;
-}
-
-.group-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 4px;
-}
-
-.group-name {
-  font-size: 1.5rem;
-  font-weight: 850;
-  letter-spacing: -0.03em;
-}
-
-.category-badge {
-  padding: 4px 12px;
-  background: rgba(0, 0, 0, 0.04);
-  border-radius: 20px;
-  font-size: 0.6875rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-text-muted);
-}
-
-.group-activity {
-  font-size: 0.9375rem;
-  font-weight: 500;
-  color: var(--color-text-muted);
-}
-
-.card-meta {
-  display: flex;
-  align-items: center;
-  gap: 32px;
-}
-
-.member-pile {
-  display: flex;
-  align-items: center;
-}
-
-.member-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: var(--color-bg-tertiary);
-  border: 2px solid white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--color-text-secondary);
-  transition: all 0.3s ease;
-}
-
-.member-avatar.more {
-  background: var(--color-primary);
-  color: white;
-  font-size: 0.6875rem;
-}
-
-.card-cta {
+.row-icon {
   width: 44px;
   height: 44px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  background: linear-gradient(135deg, #f5f7ff, #fdf4ff);
+  border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 1.375rem;
+  flex-shrink: 0;
+}
+
+.row-body { flex: 1; min-width: 0; }
+
+.row-name {
+  display: block;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-sub {
+  font-size: 0.75rem;
   color: var(--color-text-dimmed);
-  transition: all 0.3s ease;
-  transform: translateX(-10px);
-  opacity: 0;
 }
 
-.premium-list-card:hover .card-cta {
-  opacity: 1;
-  transform: translateX(0);
-  background: var(--color-text);
-  color: white;
-  border-color: var(--color-text);
+.row-end {
+  flex-shrink: 0;
+  text-align: right;
 }
 
-/* Empty Billboard */
-.empty-billboard {
+.row-balance {
+  font-size: 0.875rem;
+  font-weight: 700;
+  font-family: var(--font-mono, monospace);
+}
+
+.row-balance.positive { color: #10b981; }
+.row-balance.negative { color: #ef4444; }
+
+.row-settled {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-dimmed);
+  background: rgba(0,0,0,0.03);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+/* Skeleton */
+.row.skeleton { pointer-events: none; }
+
+.sk-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: linear-gradient(90deg, #f3f4f6, #e5e7eb, #f3f4f6);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite;
+}
+
+.sk-text { flex: 1; }
+
+.sk-line {
+  height: 10px;
+  width: 50%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #f3f4f6, #e5e7eb, #f3f4f6);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite;
+  margin-bottom: 6px;
+}
+.sk-line.sm { width: 30%; margin-bottom: 0; }
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Empty */
+.empty-card {
   text-align: center;
-  padding: 80px 40px;
-  border-radius: 40px;
-  margin: 40px 0;
+  padding: 48px 24px;
+  background: white;
+  border-radius: 16px;
+  border: 1px solid rgba(0,0,0,0.04);
 }
 
-.empty-icon-wrap {
-  position: relative;
-  width: 140px;
-  height: 140px;
-  margin: 0 auto 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.empty-emoji { font-size: 2.5rem; display: block; margin-bottom: 12px; }
+.empty-card h2 { font-size: 1.125rem; font-weight: 700; margin-bottom: 4px; }
+.empty-card p { font-size: 0.875rem; color: var(--color-text-secondary); margin-bottom: 16px; }
+
+.cta {
+  padding: 10px 20px;
+  background: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
-.glow-orb {
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle, var(--color-primary-50) 0%, transparent 70%);
-  animation: pulse 4s infinite;
+/* FAB */
+.fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 52px;
+  height: 52px;
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  color: white;
+  border: none;
+  border-radius: 16px;
+  font-size: 1.5rem;
+  font-weight: 300;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+  z-index: 100;
+  display: none;
 }
 
-.empty-title {
-  font-size: 2rem;
-  font-weight: 850;
-  margin-bottom: 12px;
+@media (max-width: 640px) {
+  .add-btn { display: none; }
+  .fab { display: flex; align-items: center; justify-content: center; }
+  .filter-bar { flex-direction: column; }
+  .filter-controls { width: 100%; }
+  .filter-select { flex: 1; }
 }
 
-.empty-desc {
-  font-size: 1.125rem;
-  color: var(--color-text-muted);
-  max-width: 400px;
-  margin: 0 auto 32px;
-  line-height: 1.6;
-}
-
-/* Redesign Modal */
-.modal-backdrop {
+/* Modal */
+.overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(10px);
-  z-index: 2000;
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(6px);
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
 }
 
-.premium-island {
+.modal {
+  background: white;
+  border-radius: 20px;
   width: 100%;
-  max-width: 520px;
-  border-radius: 36px;
-  padding: 40px;
+  max-width: 360px;
+  overflow: hidden;
 }
 
 .modal-head {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 32px;
-}
-
-.modal-title {
-  font-size: 2.25rem;
-  font-weight: 850;
-  letter-spacing: -0.04em;
-}
-
-.close-orb {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(0, 0, 0, 0.04);
-  color: var(--color-text-dimmed);
-  cursor: pointer;
-  display: flex;
   align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
+  padding: 20px 20px 0;
 }
 
-.close-orb:hover {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
-}
+.modal-head h2 { font-size: 1.25rem; font-weight: 800; }
 
-.field {
-  margin-bottom: 24px;
-}
-
-.field label {
-  display: block;
-  font-size: 0.8125rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-text-dimmed);
-  margin-bottom: 12px;
-}
-
-.glass-input {
-  width: 100%;
-  padding: 16px 20px;
-  background: white;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 16px;
-  font-size: 1.125rem;
-  font-weight: 600;
-  transition: all 0.3s ease;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.02);
-}
-
-.glass-input:focus {
-  background: white;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
-  outline: none;
-}
-
-.icon-selector-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  max-height: 180px;
-  overflow-y: auto;
-  padding: 4px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
-}
-
-.icon-selector-grid::-webkit-scrollbar {
-  width: 4px;
-}
-
-.icon-selector-grid::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 10px;
-}
-
-.icon-orb {
-  aspect-ratio: 1;
-  background: white;
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  border-radius: 14px;
-  font-size: 1.5rem;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.icon-orb:hover {
+.close {
+  width: 32px;
+  height: 32px;
   background: var(--color-bg-secondary);
-  transform: translateY(-2px);
-  border-color: var(--color-primary-light);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--color-text-dimmed);
 }
 
-.icon-orb.active {
+.close:hover { background: #fef2f2; color: #ef4444; }
+
+.modal-body {
+  padding: 20px;
+}
+
+.input {
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--color-bg-secondary);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  margin-bottom: 16px;
+}
+
+.input:focus {
+  outline: none;
   background: white;
   border-color: var(--color-primary);
-  border-width: 2px;
-  box-shadow: 0 8px 16px -4px rgba(99, 102, 241, 0.15);
-  transform: scale(1.05);
 }
 
-.category-pill-grid {
+.label {
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-dimmed);
+  margin-bottom: 8px;
+}
+
+.icon-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.icon-btn {
+  width: 38px;
+  height: 38px;
+  background: var(--color-bg-secondary);
+  border: 2px solid transparent;
+  border-radius: 10px;
+  font-size: 1.125rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.icon-btn:hover { background: white; border-color: var(--color-border); }
+.icon-btn.active { background: white; border-color: var(--color-primary); }
+
+.cat-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 6px;
+  margin-bottom: 20px;
 }
 
-.cat-pill-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  background: white;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 30px;
-  font-weight: 600;
-  font-size: 0.8125rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  color: var(--color-text-secondary);
-}
-
-.cat-pill-item:hover {
+.cat-btn {
+  padding: 6px 12px;
   background: var(--color-bg-secondary);
-  border-color: var(--color-text-dimmed);
-}
-
-.cat-pill-item.active {
-  background: var(--color-text);
-  color: white;
-  border-color: var(--color-text);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-.cta-launch {
-  width: 100%;
-  padding: 18px;
-  border-radius: 20px;
   border: none;
+  border-radius: 100px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cat-btn:hover { background: #e5e7eb; }
+.cat-btn.active { background: #1a1a2e; color: white; }
+
+.submit {
+  width: 100%;
+  padding: 14px;
   background: var(--color-primary);
   color: white;
-  font-weight: 800;
-  font-size: 1.125rem;
+  border: none;
+  border-radius: 12px;
+  font-size: 0.9375rem;
+  font-weight: 700;
   cursor: pointer;
-  transition: all 0.3s var(--ease-out-expo);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  box-shadow: 0 15px 35px -5px rgba(99, 102, 241, 0.4);
 }
 
-.cta-launch:hover:not(:disabled) {
-  transform: translateY(-2px);
-  filter: brightness(1.15);
-  box-shadow: 0 20px 45px -5px rgba(99, 102, 241, 0.5);
-}
+.submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* Animations */
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 0.8; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(1.05); }
-}
-
-.loader-pulse {
-  width: 20px;
-  height: 20px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-/* Utilities */
-.glass-layered {
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(30px) saturate(200%);
-  -webkit-backdrop-filter: blur(30px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  position: relative;
-  box-shadow: 
-    0 30px 60px -10px rgba(0, 0, 0, 0.15),
-    0 10px 20px -5px rgba(0, 0, 0, 0.05),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.9);
-}
-
-.glass-layered::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  border: 1px solid rgba(255, 255, 255, 1);
-  pointer-events: none;
-  opacity: 0.1;
-  mask-image: radial-gradient(circle at top left, black, transparent 70%);
-}
-
-.premium-island {
-  position: relative;
-  overflow: hidden;
-}
-
-/* Modal Inner Decor */
-.premium-island::before {
-  content: '';
-  position: absolute;
-  top: -100px;
-  right: -100px;
-  width: 300px;
-  height: 300px;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.05) 0%, transparent 70%);
-  z-index: 0;
-  pointer-events: none;
-}
-
-.modal-head, .modal-body {
-  position: relative;
-  z-index: 1;
-}
-
-.glass {
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-}
-
-/* Animations */
-.blur-fade-enter-active, .blur-fade-leave-active {
-  transition: all 0.6s var(--ease-out-expo);
-}
-.blur-fade-enter-from, .blur-fade-leave-to {
-  opacity: 0;
-  filter: blur(20px);
-  transform: scale(0.95);
-}
-
-/* Modal Bounce Transition */
-.modal-bounce-enter-active {
-  transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-}
-.modal-bounce-leave-active {
-  transition: all 0.3s var(--ease-out-expo);
-}
-.modal-bounce-enter-from {
-  opacity: 0;
-  transform: scale(0.8) translateY(20px);
-}
-.modal-bounce-leave-to {
-  opacity: 0;
-  transform: scale(1.05);
-  filter: blur(10px);
-}
-
-/* Stack List Transition */
-.stack-list-enter-active {
-  transition: all 0.6s var(--ease-out-expo);
-}
-.stack-list-enter-from {
-  opacity: 0;
-  transform: translateY(30px);
-}
-.stack-list-move {
-  transition: transform 0.4s var(--ease-out-expo);
-}
-
-@media (max-width: 768px) {
-  .header-content {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 24px;
-  }
-  
-  .card-inner {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  
-  .card-meta {
-    width: 100%;
-    justify-content: space-between;
-  }
-}
+/* Transitions */
+.fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>

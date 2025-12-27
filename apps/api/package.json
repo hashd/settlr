@@ -14,12 +14,13 @@
     "clean": "rm -rf dist node_modules"
   },
   "dependencies": {
+    "@pothos/core": "^4.3.0",
+    "@pothos/plugin-prisma": "^4.2.0",
     "@prisma/client": "^6.1.0",
     "graphql": "^16.9.0",
     "graphql-yoga": "^5.10.6",
-    "@pothos/core": "^4.3.0",
-    "@pothos/plugin-prisma": "^4.2.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "resend": "^6.6.0"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.7",

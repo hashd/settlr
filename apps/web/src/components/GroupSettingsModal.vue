@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-
 import { useMutation, useQuery } from '@vue/apollo-composable'
 import { useRouter } from 'vue-router'
 import { 
@@ -11,6 +10,7 @@ import {
   EXPORT_GROUP_DATA_QUERY
 } from '@/graphql/operations'
 import { useToastStore } from '@/stores/toast'
+import ConfirmModal from '@/components/ui/ConfirmModal.vue'
 
 const props = defineProps<{
   open: boolean
@@ -31,36 +31,48 @@ const { mutate: removeMember, loading: removing } = useMutation(REMOVE_MEMBER_MU
 // Queries
 const { refetch: fetchExport, loading: exporting } = useQuery(
   EXPORT_GROUP_DATA_QUERY, 
-  () => ({
-    groupId: props.group.id
-  }),
+  () => ({ groupId: props.group.id }),
   { enabled: false, fetchPolicy: 'network-only' }
 )
 
 // Form state
-
 const name = ref('')
+const confirmState = ref({
+  open: false,
+  title: '',
+  message: '',
+  onConfirm: () => {}
+})
 const icon = ref('')
 const category = ref('OTHER')
-const activeTab = ref<'general' | 'members' | 'danger' | 'data'>('general')
+const simplifyDebts = ref(true)
 
-// Modals
-const showDeleteConfirm = ref(false)
-const showLeaveConfirm = ref(false)
+// UI state
+const showConfirm = ref<'leave' | 'delete' | null>(null)
+const showIconPicker = ref(false)
 
+const icons = ['👥', '🏠', '✈️', '💑', '🍕', '🎉', '💼', '🎮', '⚽', '🍔', '🍺', '🛍️']
 const categories = [
-  { value: 'TRIP', label: 'Trip', icon: '✈️' },
-  { value: 'HOME', label: 'Home', icon: '🏠' },
-  { value: 'COUPLE', label: 'Couple', icon: '❤️' },
-  { value: 'OTHER', label: 'Other', icon: '📄' }
+  { value: 'FRIENDS', label: 'Friends' },
+  { value: 'HOME', label: 'Home' },
+  { value: 'TRIP', label: 'Trip' },
+  { value: 'COUPLE', label: 'Couple' },
+  { value: 'WORK', label: 'Work' },
+  { value: 'OTHER', label: 'Other' },
 ]
-
-const icons = ['✈️', '🏠', '❤️', '📄', '🍻', '🍔', '🎮', '🎬', '🏸', '🎁', '🚗', '💡']
 
 // Computed
 const isAdmin = computed(() => {
-  const member = props.group.members.find((m: any) => m.user.id === props.currentUserId)
+  const member = props.group?.members?.find((m: any) => m.user.id === props.currentUserId)
   return member?.role === 'ADMIN'
+})
+
+const hasChanges = computed(() => {
+  if (!props.group) return false
+  return name.value !== props.group.name ||
+         icon.value !== props.group.icon ||
+         category.value !== (props.group.category || 'OTHER') ||
+         simplifyDebts.value !== (props.group.simplifyDebts !== false)
 })
 
 // Initialize form
@@ -69,9 +81,17 @@ watch(() => props.open, (isOpen) => {
     name.value = props.group.name
     icon.value = props.group.icon
     category.value = props.group.category || 'OTHER'
-    activeTab.value = 'general'
+    simplifyDebts.value = props.group.simplifyDebts !== false
+    showConfirm.value = null
+    showIconPicker.value = false
   }
 })
+
+function selectIcon(ic: string) {
+  if (!isAdmin.value) return
+  icon.value = ic
+  showIconPicker.value = false
+}
 
 async function handleSave() {
   try {
@@ -79,13 +99,14 @@ async function handleSave() {
       id: props.group.id,
       name: name.value,
       icon: icon.value,
-      category: category.value
+      category: category.value,
+      simplifyDebts: simplifyDebts.value
     })
     emit('updated')
     emit('close')
-    toast.success('Group settings updated')
+    toast.success('Settings saved')
   } catch (e: any) {
-    toast.error(e.message || 'Failed to update group')
+    toast.error(e.message || 'Failed to save')
   }
 }
 
@@ -95,7 +116,7 @@ async function handleDelete() {
     toast.success('Group deleted')
     router.push('/groups')
   } catch (e: any) {
-    toast.error(e.message || 'Failed to delete group')
+    toast.error(e.message || 'Failed to delete')
   }
 }
 
@@ -105,22 +126,24 @@ async function handleLeave() {
     toast.success('Left group')
     router.push('/groups')
   } catch (e: any) {
-    toast.error(e.message || 'Failed to leave group')
+    toast.error(e.message || 'Failed to leave')
   }
 }
 
-async function handleRemoveMember(userId: string) {
-  if (!confirm('Are you sure you want to remove this member?')) return
-  
-  try {
-    await removeMember({
-      groupId: props.group.id,
-      userId
-    })
-    toast.success('Member removed')
-    emit('updated')
-  } catch (e: any) {
-    toast.error(e.message || 'Failed to remove member')
+function handleRemoveMember(userId: string, userName: string) {
+  confirmState.value = {
+    open: true,
+    title: 'Remove Member',
+    message: `Are you sure you want to remove ${userName} from this group?`,
+    onConfirm: async () => {
+      try {
+        await removeMember({ groupId: props.group.id, userId })
+        toast.success('Member removed')
+        emit('updated')
+      } catch (e: any) {
+        toast.error(e.message || 'Failed to remove')
+      }
+    }
   }
 }
 
@@ -128,17 +151,16 @@ async function handleExport() {
   try {
     const res = await fetchExport()
     if (!res?.data?.exportGroupData) return
-
     const blob = new Blob([res.data.exportGroupData], { type: 'text/csv' })
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `settlr-export-${props.group.name}-${Date.now()}.csv`
+    a.download = `settlr-${props.group.name}-${Date.now()}.csv`
     a.click()
     window.URL.revokeObjectURL(url)
-    toast.success('Data exported successfully')
+    toast.success('Exported!')
   } catch (e: any) {
-    toast.error(e.message || 'Failed to export data')
+    toast.error(e.message || 'Export failed')
   }
 }
 </script>
@@ -146,269 +168,213 @@ async function handleExport() {
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="open" class="modal-overlay" @click.self="emit('close')">
-        <div class="modal">
-          <div class="modal-header">
-            <h2>Group Settings</h2>
+      <div v-if="open" class="overlay" @click.self="emit('close')">
+        <div class="sheet">
+          <!-- Header -->
+          <div class="sheet-header">
             <button class="close-btn" @click="emit('close')">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M18 6L6 18M6 6l12 12"/>
               </svg>
             </button>
+            <h2>Settings</h2>
+            <button 
+              v-if="isAdmin && hasChanges"
+              class="save-btn" 
+              @click="handleSave"
+              :disabled="updating"
+            >
+              {{ updating ? '...' : 'Save' }}
+            </button>
+            <div v-else class="save-placeholder"></div>
           </div>
 
-          <div class="modal-tabs">
-            <button 
-              :class="['tab-btn', { active: activeTab === 'general' }]"
-              @click="activeTab = 'general'"
-            >
-              General
-            </button>
-            <button 
-              :class="['tab-btn', { active: activeTab === 'members' }]"
-              @click="activeTab = 'members'"
-            >
-              Members
-            </button>
-            <button 
-              :class="['tab-btn', { active: activeTab === 'data' }]"
-              @click="activeTab = 'data'"
-            >
-              Data
-            </button>
-            <button 
-              :class="['tab-btn danger', { active: activeTab === 'danger' }]"
-              @click="activeTab = 'danger'"
-            >
-              Danger Zone
-            </button>
-          </div>
-
-          <div class="modal-body">
-            <!-- General Settings -->
-            <div v-if="activeTab === 'general'" class="settings-panel">
-              <form @submit.prevent="handleSave">
-                <div class="field">
-                  <label>Group Name</label>
-                  <input 
-                    v-model="name"
-                    type="text"
-                    class="text-input"
-                    required
-                    :disabled="!isAdmin"
-                  />
-                </div>
-
-                <div class="field">
-                  <label>Category</label>
-                  <div class="category-grid">
-                    <button
-                      v-for="cat in categories"
-                      :key="cat.value"
-                      type="button"
-                      :class="['category-card', { active: category === cat.value }]"
-                      @click="isAdmin && (category = cat.value)"
-                      :disabled="!isAdmin"
-                    >
-                      <span class="category-icon">{{ cat.icon }}</span>
-                      <span class="category-label">{{ cat.label }}</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="field">
-                  <label>Icon</label>
-                  <div class="icon-scroller">
-                    <button
-                      v-for="i in icons"
-                      :key="i"
-                      type="button"
-                      :class="['icon-btn', { active: icon === i }]"
-                      @click="isAdmin && (icon = i)"
-                      :disabled="!isAdmin"
-                    >
-                      {{ i }}
-                    </button>
-                  </div>
-                </div>
-
-                <button v-if="isAdmin" type="submit" class="submit-btn" :disabled="updating">
-                  {{ updating ? 'Saving...' : 'Save Changes' }}
-                </button>
-                <p v-else class="info-text">Only admins can edit group details.</p>
-              </form>
-            </div>
-
-            <!-- Members Management -->
-            <div v-else-if="activeTab === 'members'" class="settings-panel">
-              <div class="members-list">
-                <div 
-                  v-for="member in group.members" 
-                  :key="member.user.id" 
-                  class="member-row"
-                >
-                  <div class="member-info">
-                    <div class="member-avatar">
-                      {{ member.user.name[0] }}
-                    </div>
-                    <div>
-                      <div class="member-name">
-                        {{ member.user.name }}
-                        <span v-if="member.user.id === currentUserId" class="you-badge">(You)</span>
-                      </div>
-                      <div class="member-role">{{ member.role }}</div>
-                    </div>
-                  </div>
-                  
+          <!-- Content -->
+          <div class="sheet-body">
+            
+            <!-- Group Identity -->
+            <section class="section">
+              <div class="identity-row">
+                <div class="icon-dropdown">
                   <button 
-                    v-if="isAdmin && member.user.id !== currentUserId"
-                    class="remove-btn"
-                    @click="handleRemoveMember(member.user.id)"
-                    :disabled="removing"
-                    title="Remove member"
+                    class="icon-trigger"
+                    @click="isAdmin && (showIconPicker = !showIconPicker)"
+                    :disabled="!isAdmin"
                   >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <line x1="18" y1="6" x2="6" y2="18"></line>
-                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    <span class="selected-icon">{{ icon }}</span>
+                    <svg class="chevron" :class="{ open: showIconPicker }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="m6 9 6 6 6-6"/>
                     </svg>
                   </button>
+                  <Transition name="dropdown">
+                    <div v-if="showIconPicker" class="icon-menu">
+                      <button 
+                        v-for="ic in icons" :key="ic"
+                        :class="['icon-opt', { active: icon === ic }]"
+                        @click="selectIcon(ic)"
+                      >{{ ic }}</button>
+                    </div>
+                  </Transition>
+                </div>
+                <input 
+                  v-model="name"
+                  type="text" 
+                  class="name-input"
+                  placeholder="Group name"
+                  :disabled="!isAdmin"
+                  @focus="showIconPicker = false"
+                />
+              </div>
+            </section>
+
+            <!-- Category -->
+            <section class="section">
+              <label class="section-label">Type</label>
+              <div class="cat-chips">
+                <button 
+                  v-for="c in categories" :key="c.value"
+                  :class="['cat-chip', { active: category === c.value }]"
+                  @click="isAdmin && (category = c.value)"
+                  :disabled="!isAdmin"
+                >{{ c.label }}</button>
+              </div>
+            </section>
+
+            <!-- Settings -->
+            <section class="section">
+              <label class="section-label">Preferences</label>
+              <div class="setting-card" @click="isAdmin && (simplifyDebts = !simplifyDebts)">
+                <div class="setting-info">
+                  <span class="setting-name">Simplify debts</span>
+                  <span class="setting-desc">Minimize number of payments</span>
+                </div>
+                <div :class="['toggle', { on: simplifyDebts }]">
+                  <span class="toggle-knob"></span>
                 </div>
               </div>
-            </div>
+            </section>
 
-            <!-- Data Management -->
-            <div v-else-if="activeTab === 'data'" class="settings-panel">
-               <div class="data-actions">
-                  <div class="data-item">
-                     <div class="data-info">
-                        <h3>Export Data</h3>
-                        <p>Download a CSV file of all expenses and settlements.</p>
-                     </div>
-                     <button 
-                        class="btn-secondary" 
-                        @click="handleExport"
-                        :disabled="exporting"
-                     >
-                        {{ exporting ? 'Exporting...' : 'Export CSV' }}
-                     </button>
-                  </div>
-               </div>
-            </div>
-
-            <!-- Danger Zone -->
-            <div v-else-if="activeTab === 'danger'" class="settings-panel">
-              <div class="danger-actions">
-                <div class="danger-item">
-                  <div class="danger-info">
-                    <h3>Leave Group</h3>
-                    <p>You will lose access to this group's expenses and history.</p>
+            <!-- Members -->
+            <section class="section">
+              <label class="section-label">Members · {{ group?.members?.length }}</label>
+              <div class="members-card">
+                <div 
+                  v-for="m in group?.members" :key="m.user.id"
+                  class="member-row"
+                >
+                  <div class="member-avatar">{{ m.user.name[0] }}</div>
+                  <div class="member-info">
+                    <span class="member-name">
+                      {{ m.user.name }}
+                      <span v-if="m.user.id === currentUserId" class="you-tag">you</span>
+                    </span>
+                    <span class="member-role">{{ m.role.toLowerCase() }}</span>
                   </div>
                   <button 
-                    class="btn-danger-outline" 
-                    @click="showLeaveConfirm = true"
-                  >
-                    Leave Group
-                  </button>
-                </div>
-
-                <div v-if="isAdmin" class="danger-item">
-                  <div class="danger-info">
-                    <h3>Delete Group</h3>
-                    <p>Permanently delete this group and all its data. This cannot be undone.</p>
-                  </div>
-                  <button 
-                    class="btn-danger-solid" 
-                    @click="showDeleteConfirm = true"
-                  >
-                    Delete Group
-                  </button>
+                    v-if="isAdmin && m.user.id !== currentUserId"
+                    class="remove-btn"
+                    @click.stop="handleRemoveMember(m.user.id, m.user.name)"
+                    :disabled="removing"
+                  >✕</button>
                 </div>
               </div>
-            </div>
+            </section>
+
+            <!-- Actions -->
+            <section class="section actions-section">
+              <button class="action-btn" @click="handleExport" :disabled="exporting">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                </svg>
+                {{ exporting ? 'Exporting...' : 'Export CSV' }}
+              </button>
+              <button class="action-btn warn" @click="showConfirm = 'leave'">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
+                </svg>
+                Leave Group
+              </button>
+              <button v-if="isAdmin" class="action-btn danger" @click="showConfirm = 'delete'">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+                Delete Group
+              </button>
+            </section>
+
           </div>
         </div>
       </div>
     </Transition>
 
-    <!-- Confirm Leave Modal -->
-    <Transition name="modal">
-      <div v-if="showLeaveConfirm" class="modal-overlay" style="z-index: 200">
-        <div class="modal compact">
-          <div class="modal-header">
-            <h2>Leave Group?</h2>
-          </div>
-          <div class="modal-body">
-            <p>Are you sure you want to leave <strong>{{ group?.name }}</strong>?</p>
-            <div class="modal-actions">
-              <button class="cancel-btn" @click="showLeaveConfirm = false">Cancel</button>
-              <button class="submit-btn danger" :disabled="leaving" @click="handleLeave">
-                {{ leaving ? 'Leaving...' : 'Leave Group' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Transition>
-
-    <!-- Confirm Delete Modal -->
-    <Transition name="modal">
-      <div v-if="showDeleteConfirm" class="modal-overlay" style="z-index: 200">
-        <div class="modal compact">
-          <div class="modal-header">
-            <h2>Delete Group?</h2>
-          </div>
-          <div class="modal-body">
-            <p>Are you sure you want to delete <strong>{{ group?.name }}</strong>? This action cannot be undone.</p>
-            <div class="modal-actions">
-              <button class="cancel-btn" @click="showDeleteConfirm = false">Cancel</button>
-              <button class="submit-btn danger" :disabled="deleting" @click="handleDelete">
-                {{ deleting ? 'Deleting...' : 'Delete Group' }}
-              </button>
-            </div>
+    <!-- Confirm Dialog -->
+    <Transition name="fade">
+      <div v-if="showConfirm" class="confirm-overlay" @click.self="showConfirm = null">
+        <div class="confirm-dialog">
+          <h3>{{ showConfirm === 'delete' ? 'Delete group?' : 'Leave group?' }}</h3>
+          <p v-if="showConfirm === 'delete'">
+            This will permanently delete <strong>{{ group?.name }}</strong> and all its data.
+          </p>
+          <p v-else>
+            You'll lose access to <strong>{{ group?.name }}</strong> and its history.
+          </p>
+          <div class="confirm-actions">
+            <button class="btn-cancel" @click="showConfirm = null">Cancel</button>
+            <button 
+              :class="['btn-confirm', showConfirm === 'delete' ? 'danger' : 'warn']"
+              @click="showConfirm === 'delete' ? handleDelete() : handleLeave()"
+              :disabled="deleting || leaving"
+            >
+              {{ deleting || leaving ? '...' : (showConfirm === 'delete' ? 'Delete' : 'Leave') }}
+            </button>
           </div>
         </div>
       </div>
     </Transition>
   </Teleport>
+  <ConfirmModal
+    :open="confirmState.open"
+    :title="confirmState.title"
+    :message="confirmState.message"
+    danger
+    @close="confirmState.open = false"
+    @confirm="() => { confirmState.onConfirm(); confirmState.open = false }"
+  />
 </template>
 
 <style scoped>
-.modal-overlay {
+/* Overlay */
+.overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  z-index: 100;
-  padding: var(--space-lg);
 }
 
-.modal {
-  background: var(--color-bg);
-  border-radius: var(--radius-2xl);
+/* Sheet */
+.sheet {
+  background: white;
   width: 100%;
-  max-width: 480px;
+  max-width: 440px;
   max-height: 90vh;
+  border-radius: 20px 20px 0 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.modal.compact {
-  max-width: 360px;
-}
-
-.modal-header {
+.sheet-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-lg);
-  border-bottom: 1px solid var(--color-border-light);
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
 }
 
-.modal-header h2 {
+.sheet-header h2 {
   font-size: 1.125rem;
   font-weight: 700;
 }
@@ -416,333 +382,462 @@ async function handleExport() {
 .close-btn {
   width: 36px;
   height: 36px;
+  background: var(--color-bg-secondary);
   border: none;
-  background: var(--color-bg-tertiary);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  transition: all var(--transition-fast);
+  color: var(--color-text-dimmed);
+  transition: all 0.15s;
 }
 
 .close-btn:hover {
-  background: var(--color-bg-secondary);
-  color: var(--color-text);
+  background: #fef2f2;
+  color: #ef4444;
 }
 
-.modal-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--color-border-light);
-  padding: 0 var(--space-lg);
-}
-
-.tab-btn {
-  padding: var(--space-md) var(--space-md);
-  background: none;
+.save-btn {
+  padding: 8px 16px;
+  background: var(--color-primary);
+  color: white;
   border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--color-text-muted);
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.tab-btn:hover {
-  color: var(--color-text);
-}
-
-.tab-btn.active {
-  color: var(--color-primary);
-  border-bottom-color: var(--color-primary);
-}
-
-.tab-btn.danger.active {
-  color: var(--color-danger);
-  border-bottom-color: var(--color-danger);
-}
-
-.modal-body {
-  padding: var(--space-lg);
-  overflow-y: auto;
-}
-
-.field {
-  margin-bottom: var(--space-lg);
-}
-
-.field label {
-  display: block;
+  border-radius: 8px;
   font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--color-text-muted);
-  margin-bottom: var(--space-sm);
+  cursor: pointer;
+}
+
+.save-placeholder {
+  width: 60px;
+}
+
+.sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* Sections */
+.section {
+  margin-bottom: 24px;
+}
+
+.section-label {
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  color: var(--color-text-dimmed);
+  margin-bottom: 10px;
 }
 
-.text-input {
-  width: 100%;
-  padding: var(--space-md);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  font-size: 1rem;
-  outline: none;
-  transition: all var(--transition-fast);
+/* Identity Row */
+.identity-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
 }
 
-.text-input:focus {
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-primary-50);
+/* Icon Dropdown */
+.icon-dropdown {
+  position: relative;
+  flex-shrink: 0;
 }
 
-/* Category Grid */
-.category-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: var(--space-sm);
-}
-
-.category-card {
+.icon-trigger {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--color-bg-secondary);
+  border: 1px solid transparent;
+  border-radius: 14px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: all 0.15s;
 }
 
-.category-card:hover:not(:disabled) {
-  border-color: var(--color-text-dimmed);
+.icon-trigger:hover:not(:disabled) {
+  background: white;
+  border-color: var(--color-border);
 }
 
-.category-card.active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-50);
-  color: var(--color-primary);
+.icon-trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
-/* Icon Scroller */
-.icon-scroller {
-  display: flex;
-  gap: var(--space-sm);
-  overflow-x: auto;
-  padding-bottom: var(--space-sm);
+.selected-icon {
+  font-size: 1.5rem;
+  line-height: 1;
 }
 
-.icon-btn {
+.chevron {
+  color: var(--color-text-dimmed);
+  transition: transform 0.2s;
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+}
+
+.icon-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  background: white;
+  border-radius: 16px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+  border: 1px solid rgba(0,0,0,0.05);
+  z-index: 10;
+}
+
+.icon-opt {
   width: 44px;
   height: 44px;
-  flex-shrink: 0;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg);
-  font-size: 1.25rem;
+  background: var(--color-bg-secondary);
+  border: 2px solid transparent;
+  border-radius: 12px;
+  font-size: 1.375rem;
+  cursor: pointer;
+  transition: all 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.icon-opt:hover {
+  background: white;
+  border-color: var(--color-border);
+}
+
+.icon-opt.active {
+  background: white;
+  border-color: var(--color-primary);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.2);
+}
+
+/* Dropdown transition */
+.dropdown-enter-active,
+.dropdown-leave-active {
+  transition: all 0.2s ease;
+}
+
+.dropdown-enter-from,
+.dropdown-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.name-input {
+  flex: 1;
+  padding: 14px 16px;
+  background: var(--color-bg-secondary);
+  border: 1px solid transparent;
+  border-radius: 14px;
+  font-size: 1.125rem;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.name-input:focus {
+  outline: none;
+  background: white;
+  border-color: var(--color-primary);
+}
+
+/* Category Chips */
+.cat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cat-chip {
+  padding: 8px 14px;
+  background: var(--color-bg-secondary);
+  border: none;
+  border-radius: 100px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cat-chip:hover:not(:disabled) {
+  background: #e5e7eb;
+}
+
+.cat-chip.active {
+  background: #1a1a2e;
+  color: white;
+}
+
+.cat-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Setting Card */
+.setting-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--color-bg-secondary);
+  border-radius: 14px;
   cursor: pointer;
 }
 
-.icon-btn.active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-50);
-}
-
-/* Members List */
-.members-list {
+.setting-info {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: 2px;
+}
+
+.setting-name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.setting-desc {
+  font-size: 0.75rem;
+  color: var(--color-text-dimmed);
+}
+
+/* Toggle */
+.toggle {
+  width: 48px;
+  height: 28px;
+  background: #d1d5db;
+  border-radius: 14px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.toggle.on {
+  background: #10b981;
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 0.2s;
+}
+
+.toggle.on .toggle-knob {
+  transform: translateX(20px);
+}
+
+/* Members */
+.members-card {
+  background: var(--color-bg-secondary);
+  border-radius: 14px;
+  overflow: hidden;
 }
 
 .member-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--space-sm);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-secondary);
+  gap: 12px;
+  padding: 12px 14px;
 }
 
-.member-info {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
+.member-row:not(:last-child) {
+  border-bottom: 1px solid rgba(0,0,0,0.04);
 }
 
 .member-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #667eea, #764ba2);
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
   color: white;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
+  font-size: 0.875rem;
+  flex-shrink: 0;
+}
+
+.member-info {
+  flex: 1;
+  min-width: 0;
 }
 
 .member-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.875rem;
   font-weight: 600;
-  font-size: 0.9375rem;
 }
 
-.you-badge {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  font-weight: normal;
-  margin-left: 4px;
+.you-tag {
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-primary);
+  background: rgba(99, 102, 241, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 
 .member-role {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  color: var(--color-text-dimmed);
+  text-transform: capitalize;
 }
 
 .remove-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
+  width: 28px;
+  height: 28px;
   background: transparent;
-  color: var(--color-danger);
-  border-radius: var(--radius-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  color: var(--color-text-dimmed);
   cursor: pointer;
+  font-size: 0.75rem;
+  transition: all 0.15s;
 }
 
 .remove-btn:hover {
-  background: var(--color-danger-light);
+  background: #fef2f2;
+  color: #ef4444;
 }
 
-/* Danger Zone */
-.danger-actions {
+/* Actions */
+.actions-section {
+  border-top: 1px solid rgba(0,0,0,0.05);
+  padding-top: 20px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-lg);
+  gap: 8px;
 }
 
-.danger-item {
+.action-btn {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-md);
-  padding: var(--space-lg);
-  border: 1px solid var(--color-danger-light);
-  border-radius: var(--radius-lg);
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
   background: var(--color-bg-secondary);
-}
-
-.danger-info h3 {
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--color-danger);
-  margin-bottom: 4px;
-}
-
-.danger-info p {
-  font-size: 0.875rem;
-  color: var(--color-text-muted);
-}
-
-.btn-danger-outline {
-  padding: var(--space-md);
-  border: 1px solid var(--color-danger);
-  color: var(--color-danger);
-  background: transparent;
-  border-radius: var(--radius-lg);
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.btn-danger-outline:hover {
-  background: var(--color-danger-light);
-}
-
-.btn-danger-solid {
-  padding: var(--space-md);
   border: none;
-  color: white;
-  background: var(--color-danger);
-  border-radius: var(--radius-lg);
+  border-radius: 12px;
+  font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.btn-secondary {
-  padding: var(--space-md);
-  border: 1px solid var(--color-border);
+  transition: all 0.15s;
   color: var(--color-text);
-  background: var(--color-bg);
-  border-radius: var(--radius-lg);
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-.btn-secondary:hover {
-  background: var(--color-bg-secondary);
 }
 
-.btn-danger-solid:hover {
-  background: #dc2626;
+.action-btn:hover {
+  background: #e5e7eb;
 }
 
-.submit-btn {
-  width: 100%;
-  padding: var(--space-md);
-  border: none;
-  border-radius: var(--radius-xl);
-  background: linear-gradient(135deg, #667eea, #764ba2);
-  color: white;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
+.action-btn.warn {
+  color: #f59e0b;
 }
 
-.submit-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
+.action-btn.warn:hover {
+  background: #fef3c7;
 }
 
-.submit-btn.danger {
-  background: var(--color-danger);
+.action-btn.danger {
+  color: #ef4444;
 }
 
-.info-text {
-  text-align: center;
-  color: var(--color-text-muted);
-  font-size: 0.875rem;
+.action-btn.danger:hover {
+  background: #fef2f2;
 }
 
-.modal-actions {
+/* Confirm Dialog */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1100;
   display: flex;
-  gap: var(--space-md);
-  margin-top: var(--space-lg);
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
 }
 
-.cancel-btn {
+.confirm-dialog {
+  background: white;
+  border-radius: 16px;
+  padding: 24px;
+  width: 100%;
+  max-width: 320px;
+  text-align: center;
+}
+
+.confirm-dialog h3 {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.confirm-dialog p {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.btn-cancel,
+.btn-confirm {
   flex: 1;
-  padding: var(--space-md);
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  padding: 12px;
+  border-radius: 10px;
   font-weight: 600;
   cursor: pointer;
+  border: none;
+}
+
+.btn-cancel {
+  background: var(--color-bg-secondary);
+}
+
+.btn-confirm {
+  color: white;
+}
+
+.btn-confirm.warn {
+  background: #f59e0b;
+}
+
+.btn-confirm.danger {
+  background: #ef4444;
 }
 
 /* Transitions */
 .modal-enter-active,
 .modal-leave-active {
-  transition: all 0.3s ease;
+  transition: opacity 0.25s ease;
+}
+
+.modal-enter-active .sheet,
+.modal-leave-active .sheet {
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .modal-enter-from,
@@ -750,9 +845,39 @@ async function handleExport() {
   opacity: 0;
 }
 
-.modal-enter-from .modal,
-.modal-leave-to .modal {
-  transform: scale(0.95);
+.modal-enter-from .sheet {
+  transform: translateY(100%);
+}
+
+.modal-leave-to .sheet {
+  transform: translateY(100%);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s;
+}
+
+.fade-enter-from,
+.fade-leave-to {
   opacity: 0;
+}
+
+/* Desktop */
+@media (min-width: 641px) {
+  .overlay {
+    align-items: center;
+    padding: 24px;
+  }
+  
+  .sheet {
+    border-radius: 20px;
+    max-height: 80vh;
+  }
+  
+  .modal-enter-from .sheet,
+  .modal-leave-to .sheet {
+    transform: translateY(20px) scale(0.98);
+  }
 }
 </style>

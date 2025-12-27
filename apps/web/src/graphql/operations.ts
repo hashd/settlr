@@ -89,6 +89,7 @@ export const GROUPS_QUERY = gql`
       category
       createdAt
       expenseCount
+      userBalance
       members {
         id
         role
@@ -166,10 +167,22 @@ export const EXPENSES_QUERY = gql`
       amount
       formattedAmount
       date
+      category
       splitType
+      notes
+      receiptUrl
       paidBy {
         id
         name
+      }
+      payers {
+        id
+        amount
+        formattedAmount
+        user {
+          id
+          name
+        }
       }
       shares {
         id
@@ -202,6 +215,7 @@ export const CREATE_EXPENSE_MUTATION = gql`
     $splitType: SplitType
     $shares: [ExpenseShareInput!]!
     $notes: String
+    $receiptUrl: String
   ) {
     createExpense(
       groupId: $groupId
@@ -212,6 +226,7 @@ export const CREATE_EXPENSE_MUTATION = gql`
       splitType: $splitType
       shares: $shares
       notes: $notes
+      receiptUrl: $receiptUrl
     ) {
       id
       description
@@ -303,12 +318,20 @@ export const UPDATE_GROUP_MUTATION = gql`
     $name: String
     $icon: String
     $category: GroupCategory
+    $simplifyDebts: Boolean
   ) {
-    updateGroup(id: $id, name: $name, icon: $icon, category: $category) {
+    updateGroup(
+      id: $id
+      name: $name
+      icon: $icon
+      category: $category
+      simplifyDebts: $simplifyDebts
+    ) {
       id
       name
       icon
       category
+      simplifyDebts
     }
   }
 `;
@@ -483,5 +506,108 @@ export const CREATE_COMMENT_MUTATION = gql`
 export const DELETE_COMMENT_MUTATION = gql`
   mutation DeleteComment($id: String!) {
     deleteComment(id: $id)
+  }
+`;
+
+// ============================================
+// Recurring Expenses
+// ============================================
+
+export const RECURRING_EXPENSES_QUERY = gql`
+  query RecurringExpenses($groupId: String!) {
+    recurringExpenses(groupId: $groupId) {
+      id
+      description
+      amount
+      formattedAmount
+      currency
+      category
+      splitType
+      frequency
+      dayOfMonth
+      dayOfWeek
+      nextDueDate
+      participantIds
+      isActive
+      createdAt
+    }
+  }
+`;
+
+export const CREATE_RECURRING_EXPENSE_MUTATION = gql`
+  mutation CreateRecurringExpense(
+    $groupId: String!
+    $description: String!
+    $amount: Int!
+    $category: String
+    $splitType: String
+    $frequency: String!
+    $dayOfMonth: Int
+    $dayOfWeek: Int
+    $participantIds: [String!]!
+  ) {
+    createRecurringExpense(
+      groupId: $groupId
+      description: $description
+      amount: $amount
+      category: $category
+      splitType: $splitType
+      frequency: $frequency
+      dayOfMonth: $dayOfMonth
+      dayOfWeek: $dayOfWeek
+      participantIds: $participantIds
+    ) {
+      id
+      description
+    }
+  }
+`;
+
+export const DELETE_RECURRING_EXPENSE_MUTATION = gql`
+  mutation DeleteRecurringExpense($id: String!) {
+    deleteRecurringExpense(id: $id)
+  }
+`;
+
+export const PROCESS_RECURRING_EXPENSE_MUTATION = gql`
+  mutation ProcessRecurringExpense($id: String!) {
+    processRecurringExpense(id: $id)
+  }
+`;
+
+// ============================================
+// Balance Adjustment
+// ============================================
+
+export const ADJUST_BALANCE_MUTATION = gql`
+  mutation AdjustBalance(
+    $groupId: String!
+    $fromUserId: String!
+    $toUserId: String!
+    $amount: Int!
+    $notes: String!
+  ) {
+    adjustBalance(
+      groupId: $groupId
+      fromUserId: $fromUserId
+      toUserId: $toUserId
+      amount: $amount
+      notes: $notes
+    ) {
+      id
+      amount
+      notes
+      type
+    }
+  }
+`;
+
+export const SEND_PAYMENT_REMINDER_MUTATION = gql`
+  mutation SendPaymentReminder(
+    $groupId: String!
+    $toUserId: String!
+    $amount: Int!
+  ) {
+    sendPaymentReminder(groupId: $groupId, toUserId: $toUserId, amount: $amount)
   }
 `;

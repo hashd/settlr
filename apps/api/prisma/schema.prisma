@@ -19,6 +19,7 @@ model User {
   email     String   @unique
   name      String
   avatarUrl String?
+  preferredCurrency String @default("INR")
   
   // Pseudo-user support
   isPseudo    Boolean  @default(false)  // True for placeholder users
@@ -32,14 +33,17 @@ model User {
   // Relations
   memberships   GroupMember[]
   paidExpenses  Expense[]      @relation("ExpensePayer")
+  expensePayments ExpensePayer[]
   expenseShares ExpenseShare[]
   settlements   Settlement[]   @relation("SettlementPayer")
   received      Settlement[]   @relation("SettlementReceiver")
+  recurringExpenses RecurringExpense[]
   
   // Invitations
   sentInvites     GroupInvite[] @relation("InviteSender")
   activities      Activity[]
   comments        Comment[]
+
   
   @@map("users")
 }
@@ -54,6 +58,7 @@ model Group {
   icon        String   @default("👥")
   category    GroupCategory @default(OTHER)
   simplifyDebts Boolean @default(true)
+  defaultCurrency String @default("INR")
   
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -64,6 +69,7 @@ model Group {
   settlements Settlement[]
   invites     GroupInvite[]
   activities  Activity[]
+  recurringExpenses RecurringExpense[]
   
   @@map("groups")
 }
@@ -139,7 +145,7 @@ enum InviteStatus {
 model Expense {
   id          String   @id @default(cuid())
   groupId     String
-  paidById    String
+  paidById    String?  // Deprecated: kept for backwards compat, use payers instead
   
   description String
   amount      Int      // Amount in paise (smallest currency unit)
@@ -156,12 +162,29 @@ model Expense {
   
   // Relations
   group  Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  paidBy User   @relation("ExpensePayer", fields: [paidById], references: [id])
+  paidBy User?  @relation("ExpensePayer", fields: [paidById], references: [id])
+  payers ExpensePayer[]  // NEW: Multiple payers
   shares ExpenseShare[]
   comments Comment[]
   
   @@map("expenses")
 }
+
+// NEW: Support multiple payers per expense
+model ExpensePayer {
+  id        String @id @default(cuid())
+  expenseId String
+  userId    String
+  
+  amount    Int    // Amount this user paid (in paise)
+  
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([expenseId, userId])
+  @@map("expense_payers")
+}
+
 
 enum ExpenseCategory {
   FOOD
@@ -196,7 +219,7 @@ model ExpenseShare {
 }
 
 // ============================================
-// Settlements
+// Settlements & Adjustments
 // ============================================
 
 model Settlement {
@@ -208,6 +231,7 @@ model Settlement {
   amount     Int      // Amount settled (in paise)
   currency   String   @default("INR")
   notes      String?
+  type       SettlementType @default(PAYMENT)
   
   createdAt  DateTime @default(now())
   
@@ -216,6 +240,53 @@ model Settlement {
   receiver User  @relation("SettlementReceiver", fields: [receiverId], references: [id])
   
   @@map("settlements")
+}
+
+enum SettlementType {
+  PAYMENT     // Actual money transfer
+  ADJUSTMENT  // Manual balance adjustment
+}
+
+// ============================================
+// Recurring Expenses
+// ============================================
+
+model RecurringExpense {
+  id          String   @id @default(cuid())
+  groupId     String
+  createdById String
+  
+  description String
+  amount      Int      // in paise
+  currency    String   @default("INR")
+  category    ExpenseCategory @default(OTHER)
+  splitType   SplitType @default(EQUAL)
+  
+  // Schedule
+  frequency   RecurrenceFrequency
+  dayOfMonth  Int?     // 1-31 for MONTHLY
+  dayOfWeek   Int?     // 0-6 for WEEKLY (0=Sunday)
+  nextDueDate DateTime
+  
+  // Participants (stored as JSON for simplicity)
+  participantIds String[] // User IDs involved
+  
+  isActive    Boolean  @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  group     Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy User  @relation(fields: [createdById], references: [id])
+  
+  @@map("recurring_expenses")
+}
+
+enum RecurrenceFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  YEARLY
 }
 
 // ============================================

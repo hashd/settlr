@@ -3,6 +3,7 @@ import { prisma } from "../../lib/prisma.js";
 import { User } from "./user.js";
 import { Group } from "./group.js";
 import { logActivity } from "../../lib/logging.js";
+import { MailService } from "../../lib/mail.js";
 
 // Invite status enum
 const InviteStatus = builder.enumType("InviteStatus", {
@@ -163,11 +164,20 @@ builder.mutationField("inviteToGroup", (t) =>
           expiresAt,
         },
         update: {
-          status: "PENDING",
           inviterId: ctx.userId,
           expiresAt,
         },
+        include: { group: true, inviter: true },
       });
+
+      if (invite.status === "PENDING" && invite.group && invite.inviter) {
+        await MailService.sendGroupInvite({
+          toEmail: invite.email,
+          groupName: invite.group.name,
+          inviterName: invite.inviter.name,
+          inviteCode: invite.id,
+        });
+      }
 
       await logActivity({
         groupId: args.groupId,
@@ -434,12 +444,20 @@ builder.mutationField("claimPseudoUser", (t) =>
           pseudoUserId: args.pseudoUserId,
         },
         update: {
-          status: "PENDING",
-          inviterId: ctx.userId,
-          expiresAt,
           pseudoUserId: args.pseudoUserId,
         },
+        include: { group: true, inviter: true },
       });
+
+      if (invite.status === "PENDING" && invite.group && invite.inviter) {
+        // We reuse the group invite template for now
+        await MailService.sendGroupInvite({
+          toEmail: invite.email,
+          groupName: invite.group.name,
+          inviterName: invite.inviter.name,
+          inviteCode: invite.id,
+        });
+      }
 
       await logActivity({
         groupId: args.groupId,

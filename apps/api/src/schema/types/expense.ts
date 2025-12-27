@@ -4,6 +4,7 @@ import { User } from "./user.js";
 import { Group } from "./group.js";
 import { Comment } from "./comment.js";
 import { logActivity } from "../../lib/logging.js";
+import { MailService } from "../../lib/mail.js";
 
 // Enums
 const SplitType = builder.enumType("SplitType", {
@@ -23,11 +24,11 @@ const ExpenseCategory = builder.enumType("ExpenseCategory", {
   ] as const,
 });
 
-// Expense type
-const Expense = builder.objectRef<{
+// Expense type (with optional included relations)
+type ExpenseShape = {
   id: string;
   groupId: string;
-  paidById: string;
+  paidById: string | null;
   description: string;
   amount: number;
   currency: string;
@@ -45,7 +46,46 @@ const Expense = builder.objectRef<{
   receiptUrl: string | null;
   splitType: "EQUAL" | "EXACT" | "PERCENTAGE" | "SHARES";
   createdAt: Date;
-}>("Expense");
+  paidBy?: {
+    id: string;
+    name: string;
+    email: string;
+    avatarUrl: string | null;
+    isPseudo: boolean;
+    createdAt: Date;
+  } | null;
+  shares?: Array<{
+    id: string;
+    expenseId: string;
+    userId: string;
+    amount: number;
+    user: {
+      id: string;
+      email: string;
+      name: string;
+      avatarUrl: string | null;
+      isPseudo: boolean;
+      createdAt: Date;
+    };
+  }>;
+  comments?: Array<{
+    id: string;
+    expenseId: string;
+    userId: string;
+    text: string;
+    createdAt: Date;
+    user: {
+      id: string;
+      email: string;
+      name: string;
+      avatarUrl: string | null;
+      isPseudo: boolean;
+      createdAt: Date;
+    };
+  }>;
+};
+
+const Expense = builder.objectRef<ExpenseShape>("Expense");
 
 builder.objectType(Expense, {
   fields: (t) => ({
@@ -63,10 +103,25 @@ builder.objectType(Expense, {
       resolve: (expense) =>
         `₹${(expense.amount / 100).toLocaleString("en-IN")}`,
     }),
+    // Legacy: single payer (for backwards compat)
     paidBy: t.field({
       type: User,
+      nullable: true,
       resolve: async (expense) => {
+        // Use pre-fetched paidBy if available
+        if (expense.paidBy) return expense.paidBy;
+        if (!expense.paidById) return null;
         return prisma.user.findUnique({ where: { id: expense.paidById } });
+      },
+    }),
+    // Multiple payers support
+    payers: t.field({
+      type: [ExpensePayer],
+      resolve: async (expense) => {
+        return prisma.expensePayer.findMany({
+          where: { expenseId: expense.id },
+          include: { user: true },
+        });
       },
     }),
     group: t.field({
@@ -78,6 +133,8 @@ builder.objectType(Expense, {
     shares: t.field({
       type: [ExpenseShare],
       resolve: async (expense) => {
+        // Use pre-fetched shares if available
+        if (expense.shares) return expense.shares;
         return prisma.expenseShare.findMany({
           where: { expenseId: expense.id },
           include: { user: true },
@@ -87,9 +144,12 @@ builder.objectType(Expense, {
     comments: t.field({
       type: [Comment],
       resolve: async (expense) => {
+        // Use pre-fetched comments if available
+        if (expense.comments) return expense.comments;
         return prisma.comment.findMany({
           where: { expenseId: expense.id },
           orderBy: { createdAt: "asc" },
+          include: { user: true },
         });
       },
     }),
@@ -128,6 +188,41 @@ builder.objectType(ExpenseShare, {
   }),
 });
 
+// NEW: ExpensePayer type (for multiple payers)
+const ExpensePayer = builder.objectRef<{
+  id: string;
+  expenseId: string;
+  userId: string;
+  amount: number;
+  user?: {
+    id: string;
+    email: string;
+    name: string;
+    avatarUrl: string | null;
+  };
+}>("ExpensePayer");
+
+builder.objectType(ExpensePayer, {
+  fields: (t) => ({
+    id: t.exposeID("id"),
+    amount: t.exposeInt("amount"),
+    formattedAmount: t.string({
+      resolve: (payer) => `₹${(payer.amount / 100).toLocaleString("en-IN")}`,
+    }),
+    user: t.field({
+      type: User,
+      resolve: async (payer) => {
+        if (payer.user) return payer.user;
+        return prisma.user.findUnique({ where: { id: payer.userId } });
+      },
+    }),
+  }),
+});
+// Settlement types
+const SettlementType = builder.enumType("SettlementType", {
+  values: ["PAYMENT", "ADJUSTMENT"] as const,
+});
+
 // Settlement type
 const Settlement = builder.objectRef<{
   id: string;
@@ -137,6 +232,7 @@ const Settlement = builder.objectRef<{
   amount: number;
   currency: string;
   notes: string | null;
+  type: "PAYMENT" | "ADJUSTMENT";
   createdAt: Date;
 }>("Settlement");
 
@@ -146,6 +242,7 @@ builder.objectType(Settlement, {
     amount: t.exposeInt("amount"),
     currency: t.exposeString("currency"),
     notes: t.exposeString("notes", { nullable: true }),
+    type: t.expose("type", { type: SettlementType }),
     createdAt: t.expose("createdAt", { type: "DateTime" }),
     formattedAmount: t.string({
       resolve: (settlement) =>
@@ -174,6 +271,14 @@ const ExpenseShareInput = builder.inputType("ExpenseShareInput", {
   }),
 });
 
+// NEW: Input for multiple payers
+const ExpensePayerInput = builder.inputType("ExpensePayerInput", {
+  fields: (t) => ({
+    userId: t.string({ required: true }),
+    amount: t.int({ required: true }),
+  }),
+});
+
 // Queries
 builder.queryField("expenses", (t) =>
   t.field({
@@ -185,6 +290,11 @@ builder.queryField("expenses", (t) =>
       return prisma.expense.findMany({
         where: { groupId: args.groupId },
         orderBy: { date: "desc" },
+        include: {
+          paidBy: true,
+          shares: { include: { user: true } },
+          comments: { orderBy: { createdAt: "asc" }, include: { user: true } },
+        },
       });
     },
   })
@@ -199,6 +309,7 @@ builder.mutationField("createExpense", (t) =>
       description: t.arg.string({ required: true }),
       amount: t.arg.int({ required: true }),
       paidById: t.arg.string({ required: true }),
+      // payers: t.arg({ type: [ExpensePayerInput] }), // TODO: enable after migration
       category: t.arg({ type: ExpenseCategory, defaultValue: "OTHER" }),
       splitType: t.arg({ type: SplitType, defaultValue: "EQUAL" }),
       shares: t.arg({ type: [ExpenseShareInput], required: true }),
@@ -265,6 +376,7 @@ builder.mutationField("createSettlement", (t) =>
           receiverId: args.receiverId,
           amount: args.amount,
           notes: args.notes,
+          type: "PAYMENT",
         },
       });
 
@@ -288,6 +400,109 @@ builder.mutationField("createSettlement", (t) =>
       });
 
       return settlement;
+    },
+  })
+);
+
+// Balance adjustment mutation
+builder.mutationField("adjustBalance", (t) =>
+  t.field({
+    type: Settlement,
+    args: {
+      groupId: t.arg.string({ required: true }),
+      fromUserId: t.arg.string({ required: true }),
+      toUserId: t.arg.string({ required: true }),
+      amount: t.arg.int({ required: true }),
+      notes: t.arg.string({ required: true }),
+    },
+    resolve: async (_root, args, ctx) => {
+      if (!ctx.userId) throw new Error("Not authenticated");
+
+      const adjustment = await prisma.settlement.create({
+        data: {
+          groupId: args.groupId,
+          payerId: args.fromUserId,
+          receiverId: args.toUserId,
+          amount: args.amount,
+          notes: args.notes,
+          type: "ADJUSTMENT",
+        },
+      });
+
+      // Fetch names for description
+      const [fromUser, toUser] = await Promise.all([
+        prisma.user.findUnique({ where: { id: args.fromUserId } }),
+        prisma.user.findUnique({ where: { id: args.toUserId } }),
+      ]);
+
+      await logActivity({
+        groupId: args.groupId,
+        actorId: ctx.userId,
+        type: "SETTLEMENT_CREATE",
+        description: `adjusted balance: ${fromUser?.name} → ${toUser?.name}`,
+        metadata: {
+          settlementId: adjustment.id,
+          amount: args.amount,
+          type: "ADJUSTMENT",
+          fromUserName: fromUser?.name,
+          toUserName: toUser?.name,
+        },
+      });
+
+      return adjustment;
+    },
+  })
+);
+
+// Payment reminder mutation
+builder.mutationField("sendPaymentReminder", (t) =>
+  t.field({
+    type: "Boolean",
+    args: {
+      groupId: t.arg.string({ required: true }),
+      toUserId: t.arg.string({ required: true }),
+      amount: t.arg.int({ required: true }),
+    },
+    resolve: async (_root, args, ctx) => {
+      if (!ctx.userId) throw new Error("Not authenticated");
+
+      const [fromUser, toUser, group] = await Promise.all([
+        prisma.user.findUnique({ where: { id: ctx.userId } }),
+        prisma.user.findUnique({ where: { id: args.toUserId } }),
+        prisma.group.findUnique({ where: { id: args.groupId } }),
+      ]);
+
+      if (!fromUser || !toUser || !group) {
+        throw new Error("User or group not found");
+      }
+
+      // Log activity for the reminder
+      await logActivity({
+        groupId: args.groupId,
+        actorId: ctx.userId,
+        type: "SETTLEMENT_CREATE", // Using existing type, could add REMINDER in schema
+        description: `sent a payment reminder to ${toUser.name}`,
+        metadata: {
+          type: "REMINDER",
+          toUserId: args.toUserId,
+          toUserName: toUser.name,
+          toUserEmail: toUser.email,
+          amount: args.amount,
+          groupName: group.name,
+        },
+      });
+
+      // Send email
+      await MailService.sendPaymentReminder({
+        toEmail: toUser.email,
+        toName: toUser.name,
+        fromName: fromUser.name,
+        amount: args.amount,
+        groupName: group.name,
+        currency: "INR", // Could fetch from group.defaultCurrency or Settlement
+      });
+
+      return true;
     },
   })
 );

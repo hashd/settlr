@@ -4,6 +4,7 @@ import { useMutation } from '@vue/apollo-composable'
 import { CREATE_COMMENT_MUTATION, DELETE_COMMENT_MUTATION } from '@/graphql/operations'
 import { useToastStore } from '@/stores/toast'
 import { useAuthStore } from '@/stores/auth'
+import ConfirmModal from '@/components/ui/ConfirmModal.vue'
 
 const props = defineProps<{
   expenseId: string
@@ -16,6 +17,13 @@ const toast = useToastStore()
 const auth = useAuthStore()
 
 const newComment = ref('')
+
+const confirmState = ref({
+  open: false,
+  title: '',
+  message: '',
+  onConfirm: () => {}
+})
 
 const { mutate: createComment, loading: isCreating } = useMutation(CREATE_COMMENT_MUTATION)
 const { mutate: deleteComment } = useMutation(DELETE_COMMENT_MUTATION)
@@ -35,14 +43,20 @@ async function handleSubmit() {
   }
 }
 
-async function handleDelete(id: string) {
-  if (!confirm('Delete comment?')) return
-  try {
-    await deleteComment({ id })
-    toast.success('Comment deleted')
-    emit('refresh')
-  } catch (e: any) {
-    toast.error(e.message || 'Failed to delete comment')
+function handleDelete(id: string) {
+  confirmState.value = {
+    open: true,
+    title: 'Delete Comment',
+    message: 'Are you sure you want to delete this comment?',
+    onConfirm: async () => {
+      try {
+        await deleteComment({ id })
+        toast.success('Comment deleted')
+        emit('refresh')
+      } catch (e: any) {
+        toast.error(e.message || 'Failed to delete comment')
+      }
+    }
   }
 }
 
@@ -84,6 +98,14 @@ function formatDate(iso: string) {
       </button>
     </form>
   </div>
+  <ConfirmModal
+    :open="confirmState.open"
+    :title="confirmState.title"
+    :message="confirmState.message"
+    danger
+    @close="confirmState.open = false"
+    @confirm="() => { confirmState.onConfirm(); confirmState.open = false }"
+  />
 </template>
 
 <style scoped>

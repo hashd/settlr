@@ -12,15 +12,21 @@ import {
   CANCEL_INVITE_MUTATION,
   GROUP_ACTIVITIES_QUERY,
   UPDATE_MEMBER_ROLE_MUTATION,
-  CLAIM_PSEUDO_USER_MUTATION
+  CLAIM_PSEUDO_USER_MUTATION,
+  SEND_PAYMENT_REMINDER_MUTATION
 } from '@/graphql/operations'
 import InviteMemberModal from '@/components/InviteMemberModal.vue'
 import GroupSettingsModal from '@/components/GroupSettingsModal.vue'
 import ExpenseFormModal from '@/components/ExpenseFormModal.vue'
 import CommentSection from '@/components/CommentSection.vue'
 import SpendingAnalysis from '@/components/SpendingAnalysis.vue'
+import RecurringExpenses from '@/components/RecurringExpenses.vue'
+import BalanceAdjustmentModal from '@/components/BalanceAdjustmentModal.vue'
+import SpendingCharts from '@/components/SpendingCharts.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
+import ConfirmModal from '@/components/ui/ConfirmModal.vue'
+import PromptModal from '@/components/ui/PromptModal.vue'
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -29,6 +35,22 @@ const groupId = computed(() => route.params.id as string)
 const isVisible = ref(false)
 const isScrolled = ref(false)
 const activeTab = ref<'balances' | 'expenses' | 'members' | 'activity' | 'analysis'>('balances')
+
+// Modal States
+const confirmState = ref({
+  open: false,
+  title: '',
+  message: '',
+  danger: false,
+  onConfirm: () => {}
+})
+const promptState = ref({
+  open: false,
+  title: '',
+  message: '',
+  placeholder: '',
+  onConfirm: (val: string) => {}
+})
 
 // Queries
 const { result: groupResult, loading: groupLoading, refetch: refetchGroup } = useQuery(GROUP_QUERY, () => ({
@@ -64,6 +86,7 @@ const showSettleModal = ref(false)
 const showInviteModal = ref(false)
 const showDeleteConfirm = ref(false)
 const showSettingsModal = ref(false)
+const showAdjustModal = ref(false)
 const expandedExpenseId = ref<string | null>(null)
 
 // Expense state
@@ -139,10 +162,10 @@ const members = computed(() => group.value?.members || [])
 const debts = computed(() => {
   const rawBalances = balancesResult.value?.groupBalances || []
   return rawBalances.map((d: any) => ({
-    ower: { id: d.owerId, name: d.owerName },
-    owee: { id: d.oweeId, name: d.oweeName },
+    ower: { id: d.ower.id, name: d.ower.name },
+    owee: { id: d.owee.id, name: d.owee.name },
     amount: d.amount,
-    formattedAmount: formatAmount(d.amount)
+    formattedAmount: d.formattedAmount || formatAmount(d.amount)
   }))
 })
 
@@ -236,17 +259,22 @@ async function handleDeleteExpense() {
   }
 }
 
-async function handleCancelInvite(inviteId: string) {
-  if (!confirm('Cancel this invitation?')) return
-  try {
-    await cancelInvite({ inviteId })
-    refetchInvites()
-    refetchActivities()
-    refetchInvites()
-    refetchActivities()
-    toast.success('Invite cancelled')
-  } catch (e: any) {
-    toast.error(e.message || 'Failed to cancel invite')
+function handleCancelInvite(inviteId: string) {
+  confirmState.value = {
+    open: true,
+    title: 'Cancel Invitation',
+    message: 'Are you sure you want to cancel this invitation?',
+    danger: true,
+    onConfirm: async () => {
+      try {
+        await cancelInvite({ inviteId })
+        refetchInvites()
+        refetchActivities()
+        toast.success('Invite cancelled')
+      } catch (e: any) {
+        toast.error(e.message || 'Failed to cancel invite')
+      }
+    }
   }
 }
 
@@ -254,7 +282,7 @@ async function handleCancelInvite(inviteId: string) {
 async function handleToggleAdmin(member: any) {
   const newRole = member.role === 'ADMIN' ? 'MEMBER' : 'ADMIN'
   if (newRole === 'MEMBER' && member.user.id === authStore.user?.id && adminsCount.value <= 1) {
-    alert("You are the only admin. Promote someone else before demoting yourself.")
+    toast.warning("You are the only admin. Promote someone else before demoting yourself.")
     return
   }
 
@@ -274,22 +302,43 @@ async function handleToggleAdmin(member: any) {
   }
 }
 
-async function handleClaimPseudoUser(member: any) {
-  const email = prompt(`Enter email address for ${member.user.name}`);
-  if (!email) return;
+function handleClaimPseudoUser(member: any) {
+  promptState.value = {
+    open: true,
+    title: `Claim ${member.user.name}`,
+    message: 'Enter email address for this user to send an invite.',
+    placeholder: 'email@example.com',
+    onConfirm: async (email: string) => {
+      promptState.value.open = false
+      try {
+         await claimPseudoUser({
+            groupId: groupId.value,
+            pseudoUserId: member.user.id,
+            email: email
+         })
+         toast.success(`Invite sent to ${email}`);
+         refetchGroup();
+         refetchInvites();
+         refetchActivities();
+      } catch (e: any) {
+        toast.error(e.message || 'Failed to claim user')
+      }
+    }
+  }
+}
 
+const { mutate: sendPaymentReminder } = useMutation(SEND_PAYMENT_REMINDER_MUTATION)
+
+async function handleRemind(debt: any) {
   try {
-     await claimPseudoUser({
-        groupId: groupId.value,
-        pseudoUserId: member.user.id,
-        email: email
-     })
-     toast.success(`Invite sent to ${email}`);
-     refetchGroup();
-     refetchInvites();
-     refetchActivities();
+    await sendPaymentReminder({
+      groupId: groupId.value,
+      toUserId: debt.ower.id,
+      amount: debt.amount
+    })
+    toast.success(`Reminder sent to ${debt.ower.name}`)
   } catch (e: any) {
-    toast.error(e.message || 'Failed to claim user')
+    toast.error(e.message || 'Failed to send reminder')
   }
 }
 
@@ -354,383 +403,277 @@ function getInitials(name: string) {
 
 <template>
   <div class="page-detail" :class="{ visible: isVisible }">
-    <!-- Floating Island Header -->
-    <header class="sticky-nav" :class="{ 'scrolled': isScrolled }">
-      <div class="nav-island glass">
-        <router-link to="/groups" class="nav-back">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M19 12H5M12 19l-7-7 7-7" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Compact Floating Header -->
+    <header class="header-bar" :class="{ scrolled: isScrolled }">
+      <div class="header-island">
+        <router-link to="/groups" class="back-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </router-link>
-        
-        <div class="nav-identity" v-if="group">
-          <span class="nav-icon">{{ group.icon }}</span>
-          <h1 class="nav-title">{{ group.name }}</h1>
+        <div class="header-center" v-if="group">
+          <span class="group-icon">{{ group.icon }}</span>
+          <span class="group-name">{{ group.name }}</span>
         </div>
-        
-        <button class="nav-settings" @click="showSettingsModal = true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2 0l-.29.17a1.99 1.99 0 0 0-1 2.82l.09.08a2 2 0 0 1 0 2.82l-.09.09a2 2 0 0 0 1.01 3.42h.38a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.74-.75 2 2 0 0 0-.75-2.74l-.15-.09a2 2 0 0 1 0-2.82l.15-.09a2 2 0 0 0-1.01-3.42z"/>
-            <circle cx="12" cy="12" r="3"/>
+        <button class="settings-btn" @click="showSettingsModal = true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
         </button>
       </div>
     </header>
 
-    <!-- Premium Loading State -->
-    <div v-if="groupLoading" class="premium-loader">
-      <div class="loader-orb"></div>
-      <p>Syncing Circle...</p>
+    <!-- Loading -->
+    <div v-if="groupLoading" class="loader-wrap">
+      <div class="loader-spinner"></div>
     </div>
 
-    <main v-else-if="group" class="content-container container">
-      <!-- Immersive Glass Hero -->
-      <section v-if="group" class="hero-section">
-        <div class="glass-hero glass-layered" :class="{ 'settled-state': !debts.length }">
-          <div class="hero-decor"></div>
-          <div class="hero-body">
-            <span class="hero-label">{{ debts.length ? 'Outstanding Balance' : 'Pure Transparency' }}</span>
-            <div class="hero-stat">
-              <span class="currency">₹</span>
-              <span class="value">{{ debts.length ? (totalBalance / 100).toLocaleString('en-IN') : '0' }}</span>
-            </div>
-            <div class="hero-meta">
-              <div class="meta-pill glass">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
-                </svg>
-                <span>{{ members.length }} People</span>
-              </div>
-              <div class="meta-pill glass">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
-                </svg>
-                <span>{{ expenses.length }} Items</span>
-              </div>
-            </div>
+    <main v-else-if="group" class="main-content">
+      <!-- Compact Balance Card -->
+      <section class="balance-card">
+        <div class="balance-row">
+          <div class="balance-info">
+            <span class="balance-label">{{ debts.length ? 'Balance' : 'All Clear' }}</span>
+            <span class="balance-value">₹{{ debts.length ? (totalBalance / 100).toLocaleString('en-IN') : '0' }}</span>
+          </div>
+          <div class="quick-stats">
+            <span class="stat">{{ members.length }} <small>people</small></span>
+            <span class="stat">{{ expenses.length }} <small>items</small></span>
           </div>
         </div>
       </section>
 
-      <!-- Pill Switcher Navigation -->
-      <nav class="pill-switcher glass">
-        <div class="switcher-active-bg" :style="{ transform: `translateX(${['balances', 'expenses', 'members', 'activity', 'analysis'].indexOf(activeTab) * 100}%)` }"></div>
+      <!-- Icon Tab Bar -->
+      <nav class="tab-bar">
         <button 
-          v-for="tab in ['balances', 'expenses', 'members', 'activity', 'analysis']"
-          :key="tab"
-          :class="['switch-op', { active: activeTab === tab }]"
-          @click="activeTab = tab as any"
+          v-for="tab in [
+            { id: 'balances', icon: '⚖️', label: 'Balances' },
+            { id: 'expenses', icon: '💳', label: 'Expenses' },
+            { id: 'members', icon: '👥', label: 'Members' },
+            { id: 'activity', icon: '📋', label: 'Activity' },
+            { id: 'analysis', icon: '📊', label: 'Analysis' }
+          ]"
+          :key="tab.id"
+          :class="['tab-btn', { active: activeTab === tab.id }]"
+          @click="activeTab = tab.id as any"
         >
-          {{ tab.charAt(0).toUpperCase() + tab.slice(1) }}
-          <span v-if="tab === 'balances' && debts.length" class="noti-dot"></span>
+          <span class="tab-icon">{{ tab.icon }}</span>
+          <span class="tab-label">{{ tab.label }}</span>
+          <span v-if="tab.id === 'balances' && debts.length" class="tab-badge"></span>
         </button>
       </nav>
 
-      <!-- Tab Content Panels -->
+      <!-- Content Panels -->
       <div class="panels">
-        <!-- Balances: Visual Debt Flow -->
-        <Transition name="panel-fade">
-          <div v-show="activeTab === 'balances'" class="premium-panel">
-            <div v-if="debts.length" class="visual-debt-list">
+        <!-- Balances -->
+        <Transition name="fade">
+          <div v-show="activeTab === 'balances'" class="panel">
+            <div v-if="debts.length" class="debt-list">
               <button 
                 v-for="debt in debts" 
                 :key="`${debt.ower.id}-${debt.owee.id}`"
-                class="debt-flow-card glass"
+                class="debt-row"
                 @click="openSettleModal(debt)"
               >
-                <div class="flow-visual">
-                  <div class="flow-avatar ower">{{ getInitials(debt.ower.name) }}</div>
-                  <div class="flow-path">
-                    <div class="path-line"></div>
-                    <svg class="path-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                      <path d="M5 12h14M12 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  </div>
-                  <div class="flow-avatar owee">{{ getInitials(debt.owee.name) }}</div>
+                <div class="debt-parties">
+                  <span class="avatar ower">{{ getInitials(debt.ower.name) }}</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M5 12h14M12 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span class="avatar owee">{{ getInitials(debt.owee.name) }}</span>
                 </div>
-                <div class="flow-info">
-                  <p class="flow-names"><strong>{{ debt.ower.name }}</strong> owes <strong>{{ debt.owee.name }}</strong></p>
-                  <p class="flow-amount">{{ debt.formattedAmount }}</p>
+                <div class="debt-info">
+                  <span class="debt-names">{{ debt.ower.name }} → {{ debt.owee.name }}</span>
+                  <span class="debt-amount">{{ debt.formattedAmount }}</span>
                 </div>
-                <div class="flow-action">
-                  <span class="btn-settle">Settle</span>
+                <div class="debt-actions">
+                  <button 
+                    v-if="debt.owee.id === authStore.user?.id" 
+                    class="remind-btn" 
+                    @click.stop="handleRemind(debt)"
+                  >
+                    🔔 Remind
+                  </button>
+                  <span class="settle-tag">Settle</span>
                 </div>
               </button>
             </div>
+            <div v-else class="empty-state">
+              <span class="empty-icon">✨</span>
+              <p>Everyone is settled up</p>
+            </div>
             
-            <div v-else class="empty-zen">
-              <div class="zen-circle glass">✨</div>
-              <h3>Crystal Clear</h3>
-              <p>Everyone is settled up in this circle.</p>
+            <!-- Adjust Balance Button -->
+            <div class="balance-actions">
+              <button class="adjust-btn" @click="showAdjustModal = true">
+                ⚖️ Adjust Balance
+              </button>
             </div>
           </div>
         </Transition>
 
-        <!-- Expenses: High-Fidelity List -->
-        <Transition name="panel-fade">
-          <div v-show="activeTab === 'expenses'" class="premium-panel">
-            <div class="search-filter-hub glass">
-              <div class="search-wrap">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-                </svg>
-                <input v-model="searchQuery" placeholder="Search expenses..." />
-              </div>
-              <div class="filter-actions">
-                <select v-model="filterCategory" class="glass-select">
-                  <option value="">All Categories</option>
-                  <option v-for="cat in categories" :key="cat.value" :value="cat.value">{{ cat.label }}</option>
-                </select>
-              </div>
+        <!-- Expenses -->
+        <Transition name="fade">
+          <div v-show="activeTab === 'expenses'" class="panel">
+            <div class="search-bar">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+              </svg>
+              <input v-model="searchQuery" placeholder="Search..." />
+              <select v-model="filterCategory" class="filter-select">
+                <option value="">All</option>
+                <option v-for="cat in categories" :key="cat.value" :value="cat.value">{{ cat.icon }}</option>
+              </select>
             </div>
 
-            <!-- Inline Loading -->
-            <div v-if="expensesLoading" class="loading-stack-placeholder">
-              <div class="skeleton-billboard glass"></div>
-              <div class="skeleton-billboard glass"></div>
+            <div v-if="expensesLoading" class="skeleton-stack">
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
             </div>
 
-            <div v-if="expenses.length" class="premium-expense-stack">
-              <div 
-                v-for="expense in expenses" 
-                :key="expense.id"
-                class="expense-billboard glass-layered"
-              >
-                <div class="billboard-left">
-                  <div class="cat-icon-box">
-                    {{ categories.find(c => c.value === expense.category)?.icon || '📄' }}
-                  </div>
+            <div v-else-if="expenses.length" class="expense-list">
+              <div v-for="expense in expenses" :key="expense.id" class="expense-row">
+                <div class="expense-icon">{{ categories.find(c => c.value === expense.category)?.icon || '📄' }}</div>
+                <div class="expense-main">
+                  <span class="expense-desc">{{ expense.description }}</span>
+                  <span class="expense-meta">{{ expense.paidBy.name }} · {{ formatDate(expense.date) }}</span>
                 </div>
-                <div class="billboard-main">
-                  <div class="billboard-top">
-                    <h3 class="expense-title">{{ expense.description }}</h3>
-                    <span class="expense-price">{{ expense.formattedAmount }}</span>
-                  </div>
-                  <div class="billboard-meta">
-                    <span class="payer-tag">Paid by {{ expense.paidBy.name }}</span>
-                    <span class="dot-sep"></span>
-                    <span class="date-tag">{{ formatDate(expense.date) }}</span>
-                  </div>
-                  <!-- Inlays -->
-                  <div class="billboard-inlays" v-if="expense.notes || expense.receiptUrl || expense.comments?.length">
-                    <div v-if="expense.notes" class="inlay glass" title="View notes">📝 Notes</div>
-                    <div v-if="expense.receiptUrl" class="inlay glass" title="View receipt">📎 Receipt</div>
-                    <div v-if="expense.comments?.length" class="inlay glass" @click.stop="toggleComments(expense.id)">
-                      💬 {{ expense.comments.length }}
-                    </div>
-                  </div>
-                </div>
-                <div class="billboard-actions">
-                  <button class="action-orb" @click="openEditExpense(expense)">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <span class="expense-amount">{{ expense.formattedAmount }}</span>
+                <div class="expense-actions">
+                  <button class="action-btn" @click="openEditExpense(expense)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                     </svg>
                   </button>
-                  <button class="action-orb danger" @click="confirmDeleteExpense(expense)">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <button class="action-btn danger" @click="confirmDeleteExpense(expense)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                     </svg>
                   </button>
                 </div>
-                <!-- Expanded Comments -->
-                <div v-if="expandedExpenseId === expense.id" class="billboard-expansion">
-                  <CommentSection 
-                    :expenseId="expense.id" 
-                    :comments="expense.comments || []" 
-                    @refresh="refetchExpenses"
-                  />
+                <!-- Comments toggle (always visible) -->
+                <button class="comment-btn" @click.stop="toggleComments(expense.id)" :class="{ active: expandedExpenseId === expense.id }">
+                  💬 {{ expense.comments?.length || '' }}
+                </button>
+                <div v-if="expandedExpenseId === expense.id" class="comments-panel">
+                  <CommentSection :expenseId="expense.id" :comments="expense.comments || []" @refresh="refetchExpenses"/>
                 </div>
               </div>
             </div>
-            
-            <div v-else class="empty-zen">
-              <div class="zen-circle glass">💸</div>
-              <h3>No Transactions</h3>
-              <p>This circle is waiting for its first shared expense.</p>
+
+            <div v-else class="empty-state">
+              <span class="empty-icon">💸</span>
+              <p>No expenses yet</p>
             </div>
+            
+            <!-- Recurring Expenses Section -->
+            <RecurringExpenses v-if="group" :group-id="groupId" :members="group.members" @refresh="refetchExpenses" />
+            
+            <!-- Spending Charts -->
+            <SpendingCharts v-if="expenses.length > 0" :expenses="expenses" />
           </div>
         </Transition>
 
-        <!-- Members: Premium List -->
-        <Transition name="panel-fade">
-          <div v-show="activeTab === 'members'" class="premium-panel">
+        <!-- Members -->
+        <Transition name="fade">
+          <div v-show="activeTab === 'members'" class="panel">
             <!-- Pending Invites -->
-            <div v-if="pendingInvites.length" class="section-label">Pending Invitations</div>
-            <div v-if="pendingInvites.length" class="member-stack pending">
-              <div 
-                v-for="invite in pendingInvites" 
-                :key="invite.id"
-                class="member-row glass"
-              >
-                <div class="member-avatar-box pending">
-                  {{ invite.email[0].toUpperCase() }}
-                </div>
+            <div v-if="pendingInvites.length" class="section-header">Pending</div>
+            <div v-if="pendingInvites.length" class="member-list pending">
+              <div v-for="invite in pendingInvites" :key="invite.id" class="member-row">
+                <span class="avatar pending">{{ invite.email[0].toUpperCase() }}</span>
                 <div class="member-info">
-                  <h4 class="member-name">{{ invite.email }}</h4>
-                  <p class="member-sub">Invited by {{ invite.inviter.name }}</p>
+                  <span class="member-name">{{ invite.email }}</span>
+                  <span class="member-sub">Invited by {{ invite.inviter.name }}</span>
                 </div>
-                <div class="member-actions">
-                  <button class="action-orb danger" @click="handleCancelInvite(invite.id)" title="Cancel Invite" :disabled="cancellingInvite">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                      <path d="M18 6L6 18M6 6l12 12" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
+                <button class="action-btn danger" @click="handleCancelInvite(invite.id)" :disabled="cancellingInvite">✕</button>
+              </div>
+            </div>
+
+            <!-- Members -->
+            <div class="section-header">Members</div>
+            <div class="member-list">
+              <div v-for="member in members" :key="member.id" class="member-row">
+                <span class="avatar" :class="{ pseudo: member.user.isPseudo }">{{ getInitials(member.user.name) }}</span>
+                <div class="member-info">
+                  <span class="member-name">{{ member.user.name }}</span>
+                  <span class="member-sub">{{ member.user.isPseudo ? 'Placeholder' : member.user.email }}</span>
+                </div>
+                <span v-if="member.role === 'ADMIN'" class="role-badge">Admin</span>
+                <div v-if="isAdmin" class="member-actions">
+                  <button v-if="member.user.isPseudo" class="action-btn" @click="handleClaimPseudoUser(member)" :disabled="claimingUser">📩</button>
+                  <button v-if="!member.user.isPseudo" class="action-btn" @click="handleToggleAdmin(member)" :disabled="updatingRole">
+                    {{ member.role === 'ADMIN' ? '↓' : '↑' }}
                   </button>
                 </div>
               </div>
             </div>
 
-            <!-- Members -->
-            <div class="section-label">Circle Members</div>
-            <div class="member-stack">
-              <div 
-                v-for="member in members" 
-                :key="member.id"
-                class="member-row glass"
-              >
-                <div class="member-avatar-box" :class="{ pseudo: member.user.isPseudo }">
-                  {{ getInitials(member.user.name) }}
-                </div>
-                <div class="member-info">
-                  <h4 class="member-name">{{ member.user.name }}</h4>
-                  <p class="member-sub">{{ member.user.isPseudo ? 'Placeholder Member' : member.user.email }}</p>
-                </div>
-                <div class="member-status">
-                  <span v-if="member.role === 'ADMIN'" class="role-pill">Admin</span>
-                  <div class="member-mod-actions" v-if="isAdmin">
-                    <!-- Claim Pseudo-User -->
-                    <button 
-                      v-if="member.user.isPseudo"
-                      class="mod-btn" 
-                      @click.stop="handleClaimPseudoUser(member)"
-                      title="Invite real user"
-                      :disabled="claimingUser"
-                    >
-                      📩
-                    </button>
-                    <!-- Toggle Admin -->
-                    <button 
-                      v-if="!member.user.isPseudo"
-                      class="mod-btn" 
-                      @click.stop="handleToggleAdmin(member)" 
-                      :title="member.role === 'ADMIN' ? 'Demote' : 'Promote'"
-                      :disabled="updatingRole || (member.role === 'ADMIN' && adminsCount <= 1 && member.user.id === authStore.user?.id)"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                        <path d="M7 11l5-5 5 5M7 13l5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/>
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <button class="add-member-hub glass" @click="showInviteModal = true">
-              <div class="hub-orb">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                  <path d="M12 5v14M5 12h14" stroke-linecap="round"/>
-                </svg>
-              </div>
-              <span>Invite New Member</span>
+            <button class="invite-btn" @click="showInviteModal = true">
+              <span>+</span> Invite Member
             </button>
           </div>
         </Transition>
 
-        <!-- Activity & Analysis -->
-        <Transition name="panel-fade">
-          <div v-show="activeTab === 'activity'" class="premium-panel">
-             <div class="activity-timeline glass">
-                <div v-for="act in activities" :key="act.id" class="timeline-step">
-                   <div class="step-icon glass">{{ getActivityIcon(act.type) }}</div>
-                   <div class="step-content">
-                      <p class="step-text"><strong>{{ act.actor.name }}</strong> {{ act.description }}</p>
-                      <span class="step-time">{{ formatDate(act.createdAt) }}</span>
-                   </div>
-                   <div v-if="act.metadata?.amount" class="step-value">{{ formatAmount(act.metadata.amount) }}</div>
+        <!-- Activity -->
+        <Transition name="fade">
+          <div v-show="activeTab === 'activity'" class="panel">
+            <div v-if="activities.length" class="activity-list">
+              <div v-for="act in activities" :key="act.id" class="activity-row">
+                <span class="activity-icon">{{ getActivityIcon(act.type) }}</span>
+                <div class="activity-info">
+                  <span class="activity-text"><strong>{{ act.actor.name }}</strong> {{ act.description }}</span>
+                  <span class="activity-time">{{ formatDate(act.createdAt) }}</span>
                 </div>
-             </div>
+                <span v-if="act.metadata?.amount" class="activity-amount">{{ formatAmount(act.metadata.amount) }}</span>
+              </div>
+            </div>
+            <div v-else class="empty-state">
+              <span class="empty-icon">📋</span>
+              <p>No activity yet</p>
+            </div>
           </div>
         </Transition>
 
-        <Transition name="panel-fade">
-          <div v-show="activeTab === 'analysis'" class="premium-panel">
-            <div class="analysis-hub glass">
-               <SpendingAnalysis :expenses="rawExpenses" :members="group?.members || []" />
-            </div>
+        <!-- Analysis -->
+        <Transition name="fade">
+          <div v-show="activeTab === 'analysis'" class="panel">
+            <SpendingAnalysis :expenses="rawExpenses" :members="group?.members || []" />
           </div>
         </Transition>
       </div>
     </main>
 
-    <!-- Plus-Orb FAB -->
-    <button 
-      v-if="group" 
-      class="productivity-fab" 
-      :class="{ visible: isVisible }"
-      @click="openAddExpense"
-    >
-      <div class="fab-orb">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-          <path d="M12 5v14M5 12h14" stroke-linecap="round"/>
-        </svg>
-      </div>
-      <span class="fab-label">Add Expense</span>
+    <!-- FAB -->
+    <button v-if="group" class="fab" :class="{ visible: isVisible }" @click="openAddExpense">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M12 5v14M5 12h14" stroke-linecap="round"/>
+      </svg>
     </button>
-
-
 
     <!-- Settle Modal -->
     <Teleport to="body">
-      <Transition name="modal-bounce">
-        <div v-if="showSettleModal && selectedDebt" class="modal-overlay glass-fixed" @click.self="showSettleModal = false">
-          <div class="modal-island glass-layered compact">
-            <div class="modal-glow"></div>
-            <div class="modal-header-premium">
-              <div class="header-main">
-                <span class="header-icon">💸</span>
-                <h2>Record Payment</h2>
-              </div>
-              <button class="close-orb" @click="showSettleModal = false">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M18 6L6 18M6 6l12 12" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </button>
+      <Transition name="modal">
+        <div v-if="showSettleModal && selectedDebt" class="modal-overlay" @click.self="showSettleModal = false">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3>💸 Record Payment</h3>
+              <button class="close-btn" @click="showSettleModal = false">✕</button>
             </div>
-            
-            <div class="settle-stage">
-              <div class="settle-duo">
-                <div class="duo-avatar ower">{{ getInitials(selectedDebt.ower.name) }}</div>
-                <div class="duo-path">
-                  <div class="path-line"></div>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                    <path d="M5 12h14M12 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </div>
-                <div class="duo-avatar owee">{{ getInitials(selectedDebt.owee.name) }}</div>
-              </div>
-              <p class="settle-narration">
-                <strong>{{ selectedDebt.ower.name }}</strong> is paying <strong>{{ selectedDebt.owee.name }}</strong>
-              </p>
+            <div class="settle-visual">
+              <span class="avatar ower">{{ getInitials(selectedDebt.ower.name) }}</span>
+              <span class="arrow">→</span>
+              <span class="avatar owee">{{ getInitials(selectedDebt.owee.name) }}</span>
             </div>
-            
-            <form @submit.prevent="handleSettle" class="modal-body-premium">
-              <div class="amount-entry glass">
-                <span class="currency-sym">₹</span>
-                <input 
-                  v-model="settlementAmount"
-                  type="number"
-                  step="0.01"
-                  class="premium-num-input"
-                  placeholder="0.00"
-                  required
-                  autofocus
-                />
+            <p class="settle-desc">{{ selectedDebt.ower.name }} pays {{ selectedDebt.owee.name }}</p>
+            <form @submit.prevent="handleSettle" class="settle-form">
+              <div class="amount-input-wrap">
+                <span class="currency">₹</span>
+                <input v-model="settlementAmount" type="number" step="0.01" placeholder="0.00" required autofocus />
               </div>
-              
-              <div class="due-hint">
-                Balance: {{ selectedDebt.formattedAmount }}
-              </div>
-              
-              <button type="submit" class="premium-btn active" :disabled="creatingSettlement">
-                <span>{{ creatingSettlement ? 'Recording...' : 'Record Payment' }}</span>
+              <p class="balance-hint">Balance: {{ selectedDebt.formattedAmount }}</p>
+              <button type="submit" class="primary-btn" :disabled="creatingSettlement">
+                {{ creatingSettlement ? 'Recording...' : 'Record Payment' }}
               </button>
             </form>
           </div>
@@ -738,1112 +681,840 @@ function getInitials(name: string) {
       </Transition>
     </Teleport>
 
-
-
-    <!-- Delete Confirmation Modal -->
+    <!-- Delete Modal -->
     <Teleport to="body">
-      <Transition name="modal-bounce">
-        <div v-if="showDeleteConfirm && editingExpense" class="modal-overlay glass-fixed" @click.self="showDeleteConfirm = false">
-          <div class="modal-island glass-layered compact">
-            <div class="modal-glow danger"></div>
-            <div class="modal-header-premium">
-              <div class="header-main">
-                <span class="header-icon">⚠️</span>
-                <h2>Delete Expense</h2>
-              </div>
-              <button class="close-orb" @click="showDeleteConfirm = false">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M18 6L6 18M6 6l12 12" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </button>
+      <Transition name="modal">
+        <div v-if="showDeleteConfirm && editingExpense" class="modal-overlay" @click.self="showDeleteConfirm = false">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3>⚠️ Delete Expense</h3>
+              <button class="close-btn" @click="showDeleteConfirm = false">✕</button>
             </div>
-            
-            <div class="modal-body-premium">
-              <div class="confirm-content">
-                <p class="confirm-text">Are you sure you want to remove <strong>{{ editingExpense.description }}</strong>?</p>
-                <p class="confirm-sub">This will permanently recalculate all balances in this circle.</p>
-              </div>
-              
-              <div class="action-spread">
-                <button type="button" class="premium-btn secondary" @click="showDeleteConfirm = false">Cancel</button>
-                <button type="button" class="premium-btn danger" :disabled="deletingExpense" @click="handleDeleteExpense">
-                  <span>{{ deletingExpense ? 'Deleting...' : 'Delete Forever' }}</span>
-                </button>
-              </div>
+            <p class="confirm-text">Delete <strong>{{ editingExpense.description }}</strong>?</p>
+            <p class="confirm-sub">This will recalculate all balances.</p>
+            <div class="modal-actions">
+              <button class="secondary-btn" @click="showDeleteConfirm = false">Cancel</button>
+              <button class="danger-btn" @click="handleDeleteExpense" :disabled="deletingExpense">
+                {{ deletingExpense ? 'Deleting...' : 'Delete' }}
+              </button>
             </div>
           </div>
         </div>
       </Transition>
     </Teleport>
 
-    <!-- Invite Modal -->
-    <InviteMemberModal 
-      :open="showInviteModal"
-      :group-id="groupId"
-      @close="showInviteModal = false"
-      @invited="() => { refetchGroup(); showInviteModal = false; }"
-    />
-
-    <!-- Group Settings Modal -->
-    <GroupSettingsModal
-      v-if="group"
-      :open="showSettingsModal"
-      :group="group"
-      :current-user-id="authStore.user?.id || ''"
-      @close="showSettingsModal = false"
-      @updated="refetchGroup"
-    />
-
-    <!-- Expense Form Modal -->
-    <ExpenseFormModal
-      v-if="group"
-      :open="showExpenseModal"
-      :group="group"
-      :expense="editingExpense"
-      @close="showExpenseModal = false"
-      @saved="onExpenseSaved"
-    />
+    <!-- Other Modals -->
+    <InviteMemberModal :open="showInviteModal" :group-id="groupId" @close="showInviteModal = false" @invited="() => { refetchGroup(); showInviteModal = false; }"/>
+    <GroupSettingsModal v-if="group" :open="showSettingsModal" :group="group" :current-user-id="authStore.user?.id || ''" @close="showSettingsModal = false" @updated="refetchGroup"/>
+    <ExpenseFormModal v-if="group" :open="showExpenseModal" :group="group" :expense="editingExpense" @close="showExpenseModal = false" @saved="onExpenseSaved"/>
+    <BalanceAdjustmentModal v-if="showAdjustModal && group" :group-id="groupId" :members="group.members" @close="showAdjustModal = false" @saved="() => { refetchBalances(); showAdjustModal = false; }"/>
   </div>
+  <ConfirmModal
+    :open="confirmState.open"
+    :title="confirmState.title"
+    :message="confirmState.message"
+    :danger="confirmState.danger"
+    @close="confirmState.open = false"
+    @confirm="confirmState.onConfirm"
+  />
+
+  <PromptModal
+    :open="promptState.open"
+    :title="promptState.title"
+    :message="promptState.message"
+    :placeholder="promptState.placeholder"
+    @close="promptState.open = false"
+    @confirm="promptState.onConfirm"
+  />
 </template>
 
+
 <style scoped>
+/* Base */
 .page-detail {
   min-height: 100vh;
-  padding-bottom: 120px;
-  background: transparent;
+  padding-bottom: 100px;
   opacity: 0;
-  transform: translateY(10px);
-  transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.4s ease;
 }
-
 .page-detail.visible {
   opacity: 1;
-  transform: translateY(0);
 }
 
-.container {
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 0 24px;
-}
-
-/* Floating Island Header */
-.sticky-nav {
+/* Header */
+.header-bar {
   position: fixed;
   top: 72px;
   left: 0;
   right: 0;
-  z-index: 1000;
+  z-index: 100;
+  padding: 8px 16px;
   display: flex;
   justify-content: center;
-  padding: 12px 24px;
   pointer-events: none;
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all 0.3s ease;
 }
-
-.nav-island {
+.header-bar.scrolled {
+  top: 64px;
+}
+.header-island {
   pointer-events: auto;
-  width: 100%;
-  max-width: 680px;
-  height: 54px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
-  border-radius: 27px;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  background: rgba(255, 255, 255, 0.1);
-  box-shadow: 
-    0 4px 12px rgba(0, 0, 0, 0.02);
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  gap: 12px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
 }
-
-.sticky-nav.scrolled {
-  padding: 8px 24px;
-}
-
-.sticky-nav.scrolled .nav-island {
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border-color: rgba(255, 255, 255, 0.8);
-  box-shadow: 
-    0 10px 40px -10px rgba(0, 0, 0, 0.08),
-    0 0 0 1px rgba(0, 0, 0, 0.02);
-  max-width: 600px;
-}
-
-.nav-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 48px;
-}
-
-.nav-back, .nav-settings {
-  width: 44px;
-  height: 44px;
+.back-btn, .settings-btn {
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 14px;
+  border-radius: 10px;
   color: var(--color-text-secondary);
   transition: all 0.2s ease;
-  background: white;
-  border: 1px solid rgba(0, 0, 0, 0.05);
 }
-
-.nav-back:hover, .nav-settings:hover {
+.back-btn:hover, .settings-btn:hover {
   background: var(--color-bg-secondary);
   color: var(--color-text);
-  transform: scale(1.05);
 }
-
-.nav-identity {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.nav-icon {
-  font-size: 1.5rem;
-}
-@media (max-width: 640px) {
-  .sticky-nav {
-    padding: 8px;
-    top: 64px;
-  }
-  .nav-island {
-    height: 48px;
-    padding: 0 12px;
-  }
-  .nav-title {
-    font-size: 1rem;
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
-.nav-title {
-  font-size: 1.125rem;
-  font-weight: 850;
-  letter-spacing: -0.02em;
-  color: var(--color-text);
-}
-
-/* Immersive Hero */
-.hero-section {
-  padding-top: 140px;
-  margin-bottom: 32px;
-}
-
-.glass-hero {
-  position: relative;
-  padding: 48px 32px;
-  border-radius: 32px;
-  text-align: center;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid white;
-  box-shadow: 
-    0 20px 40px -10px rgba(0, 0, 0, 0.1),
-    inset 0 0 100px rgba(99, 102, 241, 0.03);
-}
-
-.hero-decor {
-  position: absolute;
-  top: -50%;
-  left: -20%;
-  width: 140%;
-  height: 200%;
-  background: radial-gradient(circle at center, rgba(102, 126, 234, 0.08) 0%, transparent 70%);
-  pointer-events: none;
-  animation: drift 20s infinite linear;
-}
-
-@keyframes drift {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.hero-label {
-  font-size: 0.875rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-text-dimmed);
-  margin-bottom: 12px;
-  display: block;
-}
-
-.hero-stat {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 6px;
-  margin-bottom: 24px;
-}
-
-.hero-stat .currency {
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: var(--color-text-muted);
-}
-
-.hero-stat .value {
-  font-size: 4rem;
-  font-weight: 900;
-  letter-spacing: -0.04em;
-  background: linear-gradient(135deg, #1e293b 0%, #475569 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.hero-meta {
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-}
-
-.meta-pill {
+.header-center {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
-  border-radius: 20px;
-  font-size: 0.8125rem;
-  font-weight: 650;
-  color: var(--color-text-secondary);
-  background: rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(0, 0, 0, 0.03);
 }
-
-/* Pill Switcher */
-.pill-switcher {
-  position: relative;
-  display: flex;
-  background: rgba(0, 0, 0, 0.03);
-  padding: 6px;
-  border-radius: 20px;
-  margin-bottom: 32px;
-  border: 1px solid rgba(0, 0, 0, 0.02);
-}
-
-.switcher-active-bg {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  width: calc(20% - 2.4px);
-  height: calc(100% - 12px);
-  background: white;
-  border-radius: 14px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  z-index: 1;
-}
-
-.switch-op {
-  position: relative;
-  flex: 1;
-  padding: 12px 0;
-  border: none;
-  background: transparent;
-  font-size: 0.8125rem;
+.group-icon { font-size: 1.25rem; }
+.group-name {
   font-weight: 700;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  z-index: 2;
-  transition: color 0.3s ease;
-}
-
-.switch-op.active {
+  font-size: 0.9375rem;
   color: var(--color-text);
 }
 
-.noti-dot {
+/* Loader */
+.loader-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+.loader-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--color-bg-secondary);
+  border-top-color: var(--color-text);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Main Content */
+.main-content {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 100px 16px 0;
+}
+
+/* Balance Card */
+.balance-card {
+  margin-bottom: 20px;
+}
+.balance-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+}
+.balance-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.balance-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-dimmed);
+}
+.balance-value {
+  font-size: 1.75rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+}
+.quick-stats {
+  display: flex;
+  gap: 16px;
+}
+.stat {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+.stat small {
+  font-weight: 500;
+  color: var(--color-text-dimmed);
+}
+
+/* Tab Bar */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+.tab-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+.tab-btn:hover { background: rgba(0, 0, 0, 0.03); }
+.tab-btn.active {
+  background: white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.tab-icon { font-size: 1rem; }
+.tab-label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.tab-btn.active .tab-label { color: var(--color-text); }
+.tab-badge {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 4px;
+  right: 25%;
   width: 6px;
   height: 6px;
   background: var(--color-danger);
   border-radius: 50%;
 }
 
-/* Debt Flow */
-.visual-debt-list {
+/* Panels */
+.panel { min-height: 200px; }
+
+/* Debt List */
+.debt-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
 }
-
-.debt-flow-card {
+.debt-row {
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 24px;
-  border-radius: 24px;
+  gap: 12px;
+  padding: 12px 16px;
   background: white;
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  transition: all 0.3s ease;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
   width: 100%;
   text-align: left;
 }
-
-.debt-flow-card:hover {
-  transform: translateY(-4px) scale(1.01);
+.debt-row:hover {
   border-color: var(--color-primary-light);
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.08);
+  transform: translateX(2px);
 }
-
-.flow-visual {
+.debt-parties {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 6px;
 }
-
-.flow-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  color: white;
-  font-size: 0.875rem;
-}
-
-.flow-avatar.ower {
-  background: linear-gradient(135deg, #475569 0%, #1e293b 100%);
-}
-
-.flow-avatar.owee {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-}
-
-.flow-path {
+.debt-parties svg { color: var(--color-text-dimmed); }
+.debt-info {
+  flex: 1;
   display: flex;
   flex-direction: column;
+  gap: 2px;
+}
+.debt-actions {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--color-text-dimmed);
+  gap: 8px;
 }
-
-.path-line {
-  width: 32px;
-  height: 2px;
-  background: repeating-linear-gradient(90deg, var(--color-border) 0, var(--color-border) 4px, transparent 4px, transparent 8px);
-}
-
-.flow-info {
-  flex: 1;
-}
-
-.flow-names {
-  font-size: 0.9375rem;
+.remind-btn {
+  padding: 4px 8px;
+  background: white;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
   color: var(--color-text-secondary);
-  margin-bottom: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
 }
-
-.flow-names strong {
-  color: var(--color-text);
+.remind-btn:hover {
+  border-color: var(--color-text-dimmed);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+.debt-names {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+}
+.debt-amount {
+  font-size: 0.9375rem;
   font-weight: 700;
-}
-
-.flow-amount {
-  font-size: 1.25rem;
-  font-weight: 800;
   color: var(--color-text);
-  letter-spacing: -0.01em;
 }
-
-.btn-settle {
-  padding: 10px 20px;
-  border-radius: 30px;
+.settle-tag {
+  padding: 6px 12px;
   background: var(--color-text);
   color: white;
-  font-weight: 700;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  box-shadow: 0 8px 16px -4px rgba(0, 0, 0, 0.2);
-}
-
-/* Expense Stack */
-.premium-expense-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.expense-billboard {
-  display: grid;
-  grid-template-columns: 64px 1fr auto;
-  gap: 20px;
-  padding: 20px;
-  background: white;
-  border-radius: 24px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-}
-
-.expense-billboard:hover {
-  border-color: rgba(99, 102, 241, 0.2);
-  transform: translateX(4px);
-  background: rgba(255, 255, 255, 0.98);
-}
-
-.cat-icon-box {
-  width: 64px;
-  height: 64px;
-  background: var(--color-bg-secondary);
-  border-radius: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.75rem;
-}
-
-.billboard-main {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.billboard-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 6px;
-}
-
-.expense-title {
-  font-size: 1.125rem;
-  font-weight: 800;
-  color: var(--color-text);
-  letter-spacing: -0.01em;
-}
-
-.expense-price {
-  font-size: 1.125rem;
-  font-weight: 850;
-  color: var(--color-text);
-  font-family: var(--font-mono);
-}
-
-.billboard-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--color-text-dimmed);
-}
-
-.dot-sep {
-  width: 3px;
-  height: 3px;
-  background: var(--color-border);
-  border-radius: 50%;
-}
-
-.billboard-inlays {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.inlay {
   font-size: 0.75rem;
   font-weight: 700;
-  padding: 4px 10px;
   border-radius: 8px;
-  color: var(--color-text-secondary);
-  background: rgba(0, 0, 0, 0.03);
 }
 
-.billboard-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  opacity: 0;
-  transform: translateX(10px);
-  transition: all 0.2s ease;
-}
-
-.expense-billboard:hover .billboard-actions {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-.action-orb {
+/* Avatar */
+.avatar {
   width: 32px;
   height: 32px;
-  background: var(--color-bg-secondary);
-  border: none;
   border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+}
+.avatar.ower { background: linear-gradient(135deg, #475569, #1e293b); }
+.avatar.owee { background: linear-gradient(135deg, #10b981, #059669); }
+.avatar.pending {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-dimmed);
+  border: 2px dashed var(--color-border);
+}
+.avatar.pseudo {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-dimmed);
+}
+
+/* Empty State */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 48px 24px;
+  text-align: center;
+}
+.empty-icon { font-size: 2rem; }
+.empty-state p {
+  font-size: 0.875rem;
+  color: var(--color-text-dimmed);
+}
+
+/* Search Bar */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+.search-bar svg { color: var(--color-text-dimmed); flex-shrink: 0; }
+.search-bar input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 0.875rem;
+  outline: none;
+}
+.filter-select {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  background: white;
+}
+
+/* Skeleton */
+.skeleton-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skeleton-row {
+  height: 56px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 12px;
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+
+/* Expense List */
+.expense-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.expense-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-radius: 12px;
+  flex-wrap: wrap;
+}
+.expense-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-secondary);
+  border-radius: 10px;
+  font-size: 1rem;
+}
+.expense-main {
+  flex: 1;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.expense-desc {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.expense-meta {
+  font-size: 0.75rem;
+  color: var(--color-text-dimmed);
+}
+.expense-amount {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+.expense-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.expense-row:hover .expense-actions { opacity: 1; }
+.action-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-secondary);
+  border: none;
+  border-radius: 8px;
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: all 0.2s ease;
 }
-
-.action-orb:hover {
+.action-btn:hover {
   background: var(--color-text);
   color: white;
-  transform: scale(1.1);
 }
-
-.action-orb.danger:hover {
+.action-btn.danger:hover {
   background: var(--color-danger);
 }
-
-/* Member Stack */
-.member-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-bottom: 24px;
+.comment-btn {
+  padding: 4px 10px;
+  background: var(--color-bg-secondary);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.comment-btn:hover {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+}
+.comment-btn.active {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: var(--color-primary);
+}
+.comments-panel {
+  width: 100%;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
 }
 
+/* Balance Actions */
+.balance-actions {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.adjust-btn {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.adjust-btn:hover {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-text-dimmed);
+}
+
+/* Member List */
+.section-header {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-dimmed);
+  margin: 16px 0 8px;
+}
+.member-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .member-row {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px;
+  gap: 12px;
+  padding: 10px 14px;
   background: white;
-  border-radius: 20px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-radius: 12px;
 }
-
-.member-avatar-box {
-  width: 44px;
-  height: 44px;
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  border-radius: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  color: white;
-  font-size: 0.8125rem;
-}
-
-.member-avatar-box.pseudo {
-  background: var(--color-bg-secondary);
-  color: var(--color-text-dimmed);
-  border: 2px dashed var(--color-border);
-}
-
 .member-info {
   flex: 1;
-}
-
-.member-name {
-  font-weight: 750;
-  font-size: 0.9375rem;
-  color: var(--color-text);
-}
-
-.member-sub {
-  font-size: 0.75rem;
-  color: var(--color-text-dimmed);
-  font-weight: 600;
-}
-
-.role-pill {
-  font-size: 0.6875rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  color: var(--color-primary);
-  background: var(--color-primary-50);
-  padding: 4px 8px;
-  border-radius: 20px;
-}
-
-.add-member-hub {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 16px;
-  border-radius: 20px;
-  border: 2px dashed var(--color-border);
-  background: transparent;
-  width: 100%;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  font-weight: 700;
-  color: var(--color-text-secondary);
-}
-
-.add-member-hub:hover {
-  border-color: var(--color-primary);
-  background: var(--color-primary-50);
-  color: var(--color-primary);
-}
-
-/* Activity Feed */
-.activity-timeline {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  padding: 12px;
-  border-radius: 24px;
-  background: white;
+  gap: 1px;
 }
-
-.timeline-step {
-  display: flex;
-  gap: 16px;
-  padding: 16px;
-  position: relative;
-}
-
-.timeline-step:not(:last-child)::after {
-  content: '';
-  position: absolute;
-  top: 56px;
-  left: 36px;
-  width: 2px;
-  height: calc(100% - 40px);
-  background: var(--color-bg-secondary);
-}
-
-.step-icon {
-  width: 40px;
-  height: 40px;
-  background: var(--color-bg-secondary);
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.25rem;
-  z-index: 2;
-}
-
-.step-content {
-  flex: 1;
-}
-
-.step-text {
-  font-size: 0.9375rem;
-  line-height: 1.5;
-  color: var(--color-text);
-}
-
-.step-text strong {
-  font-weight: 750;
-}
-
-.step-time {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--color-text-dimmed);
-}
-
-.step-value {
-  font-weight: 850;
-  font-family: var(--font-mono);
-  color: var(--color-text);
-}
-
-/* Productivity FAB */
-.productivity-fab {
-  position: fixed;
-  bottom: 40px;
-  right: 40px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 24px 12px 12px;
-  background: var(--color-text);
-  color: white;
-  border-radius: 40px;
-  border: none;
-  cursor: pointer;
-  box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.3);
-  z-index: 150;
-  opacity: 0;
-  transform: translateY(20px) scale(0.9);
-  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.productivity-fab.visible {
-  opacity: 1;
-  transform: translateY(0) scale(1);
-}
-
-.fab-orb {
-  width: 40px;
-  height: 40px;
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.fab-label {
-  font-weight: 800;
-  font-size: 0.9375rem;
-  letter-spacing: -0.01em;
-}
-
-.productivity-fab:hover {
-  transform: translateY(-5px) scale(1.05);
-  box-shadow: 0 30px 60px -15px rgba(0, 0, 0, 0.4);
-}
-
-/* Transitions */
-.panel-fade-enter-active, .panel-fade-leave-active {
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.panel-fade-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
-}
-
-.panel-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-
-/* Search Hub */
-.search-filter-hub {
-  display: flex;
-  gap: 12px;
-  padding: 12px;
-  border-radius: 20px;
-  background: rgba(0, 0, 0, 0.03);
-  margin-bottom: 24px;
-}
-
-.search-wrap {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: white;
-  padding: 0 16px;
-  border-radius: 14px;
-  color: var(--color-text-dimmed);
-}
-
-.search-wrap input {
-  flex: 1;
-  border: none;
-  background: transparent;
-  padding: 12px 0;
+.member-name {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-text);
-  outline: none;
+}
+.member-sub {
+  font-size: 0.75rem;
+  color: var(--color-text-dimmed);
+}
+.role-badge {
+  padding: 4px 8px;
+  background: var(--color-primary-50);
+  color: var(--color-primary);
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: 6px;
+}
+.member-actions {
+  display: flex;
+  gap: 4px;
+}
+.invite-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  margin-top: 12px;
+  background: transparent;
+  border: 2px dashed var(--color-border);
+  border-radius: 12px;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.invite-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
-.glass-select {
-  padding: 12px 16px;
-  border-radius: 14px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
+/* Activity List */
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.activity-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
   background: white;
-  font-weight: 700;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+.activity-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-secondary);
+  border-radius: 10px;
+  font-size: 0.875rem;
+}
+.activity-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.activity-text {
   font-size: 0.8125rem;
   color: var(--color-text-secondary);
 }
+.activity-time {
+  font-size: 0.6875rem;
+  color: var(--color-text-dimmed);
+}
+.activity-amount {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
 
-/* Premium Loader */
-.premium-loader {
+/* FAB */
+.fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 56px;
+  height: 56px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 60vh;
-  gap: 16px;
+  background: var(--color-text);
+  color: white;
+  border: none;
+  border-radius: 16px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  opacity: 0;
+  transform: translateY(16px) scale(0.9);
+  transition: all 0.3s ease;
+  z-index: 50;
+}
+.fab.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.fab:hover {
+  transform: translateY(-2px) scale(1.05);
 }
 
-.loader-orb {
-  width: 48px;
-  height: 48px;
-  border: 4px solid var(--color-bg-secondary);
-  border-top-color: var(--color-text);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-.premium-loader p {
-  font-weight: 700;
-  color: var(--color-text-dimmed);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  font-size: 0.75rem;
-}
-
-/* Premium Modal Overhaul */
+/* Modal */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.4);
-  backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
   z-index: 200;
 }
-
-.modal-island {
-  position: relative;
+.modal-box {
   width: 100%;
-  max-width: 440px;
-  border-radius: 32px;
-  overflow: hidden;
-  padding: 32px;
+  max-width: 380px;
+  background: white;
+  border-radius: 20px;
+  padding: 24px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.12);
 }
-
-.modal-island.compact {
-  max-width: 400px;
-}
-
-.modal-header-premium {
+.modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 32px;
+  margin-bottom: 20px;
 }
-
-.header-main {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.modal-header h3 {
+  font-size: 1.125rem;
+  font-weight: 700;
 }
-
-.header-main h2 {
-  font-size: 1.25rem;
-  font-weight: 850;
-  letter-spacing: -0.02em;
-}
-
-.close-orb {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.05);
-  border: none;
+.close-btn {
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  border: none;
+  border-radius: 10px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
-
-.close-orb:hover {
+.close-btn:hover {
   background: var(--color-text);
   color: white;
-  transform: rotate(90deg);
 }
-
-.settle-stage {
+.settle-visual {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.arrow {
+  font-size: 1.25rem;
+  color: var(--color-text-dimmed);
+}
+.settle-desc {
   text-align: center;
-  margin-bottom: 32px;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  margin-bottom: 20px;
 }
-
-.settle-duo {
+.settle-form {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 20px;
-  margin-bottom: 16px;
+  flex-direction: column;
+  gap: 12px;
 }
-
-.duo-avatar {
-  width: 56px;
-  height: 56px;
-  border-radius: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  color: white;
-  font-size: 1rem;
-}
-
-.duo-avatar.ower { background: linear-gradient(135deg, #475569 0%, #1e293b 100%); }
-.duo-avatar.owee { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
-
-.duo-path {
+.amount-input-wrap {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--color-text-dimmed);
+  padding: 12px 16px;
+  background: var(--color-bg-secondary);
+  border-radius: 12px;
 }
-
-.modal-body-premium {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.amount-entry {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 16px 24px;
-  border-radius: 20px;
-  background: white;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.currency-sym {
+.currency {
   font-size: 1.25rem;
   font-weight: 700;
   color: var(--color-text-dimmed);
 }
-
-.premium-num-input {
+.amount-input-wrap input {
   flex: 1;
   border: none;
   background: transparent;
-  font-size: 2rem;
-  font-weight: 850;
-  color: var(--color-text);
-  outline: none;
-  width: 100%;
-}
-
-.due-hint {
-  text-align: center;
-  font-size: 0.8125rem;
+  font-size: 1.5rem;
   font-weight: 700;
+  outline: none;
+}
+.balance-hint {
+  text-align: center;
+  font-size: 0.75rem;
   color: var(--color-text-dimmed);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
-
-.premium-btn {
-  width: 100%;
-  padding: 16px;
-  border-radius: 18px;
-  border: none;
-  font-weight: 800;
-  font-size: 1rem;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.premium-btn.active {
+.primary-btn {
+  padding: 14px;
   background: var(--color-text);
   color: white;
-  box-shadow: 0 12px 24px -6px rgba(0, 0, 0, 0.2);
+  border: none;
+  border-radius: 12px;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
-
-.premium-btn.secondary {
-  background: var(--color-bg-secondary);
-  color: var(--color-text-secondary);
-}
-
-.premium-btn.danger {
-  background: var(--color-danger);
-  color: white;
-  box-shadow: 0 12px 24px -6px rgba(239, 68, 68, 0.3);
-}
-
-.premium-btn:hover {
-  transform: translateY(-2px);
-  filter: brightness(1.1);
-}
-
-.modal-glow {
-  position: absolute;
-  top: -20%;
-  left: -20%;
-  width: 140%;
-  height: 140%;
-  background: radial-gradient(circle at center, rgba(99, 102, 241, 0.08) 0%, transparent 70%);
-  z-index: -1;
-  pointer-events: none;
-}
-
-.modal-glow.danger {
-  background: radial-gradient(circle at center, rgba(239, 68, 68, 0.08) 0%, transparent 70%);
-}
-
-.modal-bounce-enter-active {
-  animation: modal-bounce-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.modal-bounce-leave-active {
-  animation: modal-bounce-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) reverse;
-}
-
-@keyframes modal-bounce-in {
-  0% { opacity: 0; transform: scale(0.9) translateY(20px); }
-  100% { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-.confirm-content {
-  text-align: center;
-  margin-bottom: 24px;
-}
+.primary-btn:hover { opacity: 0.9; }
+.primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .confirm-text {
-  font-size: 1.125rem;
-  font-weight: 750;
+  font-size: 0.9375rem;
   color: var(--color-text);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
-
 .confirm-sub {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   color: var(--color-text-dimmed);
-  line-height: 1.5;
+  margin-bottom: 20px;
 }
-
-.action-spread {
+.modal-actions {
   display: flex;
-  gap: 12px;
+  gap: 8px;
 }
-
-.action-spread button {
+.secondary-btn {
   flex: 1;
+  padding: 12px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.danger-btn {
+  flex: 1;
+  padding: 12px;
+  background: var(--color-danger);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.danger-btn:disabled { opacity: 0.5; }
+
+/* Transitions */
+.fade-enter-active, .fade-leave-active {
+  transition: all 0.2s ease;
+}
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.modal-enter-active {
+  animation: modal-in 0.3s ease;
+}
+.modal-leave-active {
+  animation: modal-in 0.2s ease reverse;
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
 }
 
-.glass-layered {
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(30px) saturate(200%);
-  -webkit-backdrop-filter: blur(30px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  position: relative;
-  box-shadow: 
-    0 30px 60px -10px rgba(0, 0, 0, 0.15),
-    0 10px 20px -5px rgba(0, 0, 0, 0.05),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.9);
-}
-
-.loading-stack-placeholder {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.skeleton-billboard {
-  height: 104px;
-  border-radius: 24px;
-  animation: skeleton-pulse 1.5s infinite;
-}
-
-@keyframes skeleton-pulse {
-  0% { opacity: 0.5; }
-  50% { opacity: 0.8; }
-  100% { opacity: 0.5; }
+/* Mobile */
+@media (max-width: 640px) {
+  .header-bar { top: 56px; padding: 8px 12px; }
+  .main-content { padding-top: 88px; }
+  .balance-value { font-size: 1.5rem; }
+  .tab-label { display: none; }
+  .tab-btn { padding: 10px 6px; }
+  .tab-icon { font-size: 1.25rem; }
+  .fab { bottom: 16px; right: 16px; width: 52px; height: 52px; }
 }
 </style>
