@@ -3,6 +3,7 @@ import { Resend } from "resend";
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 const SENDER_EMAIL = "onboarding@resend.dev"; // Replace with verifying domain in production
+const APP_URL = process.env.APP_URL || "http://localhost:5173";
 
 // Premium Design System (Inline Styles)
 const styles = {
@@ -137,7 +138,7 @@ export const MailService = {
         <div style="${styles.container}">
           
           <div style="${styles.header}">
-            <a href="http://localhost:5173" style="${styles.logo}">Settlr.</a>
+            <a href="${APP_URL}" style="${styles.logo}">Settlr.</a>
           </div>
 
           <div style="${styles.body}">
@@ -155,9 +156,7 @@ export const MailService = {
             </div>
 
             <div style="${styles.buttonContainer}">
-              <a href="http://localhost:5173" style="${
-                styles.button
-              }">Settle Up Now</a>
+              <a href="${APP_URL}" style="${styles.button}">Settle Up Now</a>
             </div>
           </div>
 
@@ -207,9 +206,7 @@ export const MailService = {
     inviteCode?: string;
   }) {
     const subject = `${inviterName} invited you to "${groupName}"`;
-    const inviteLink = inviteCode
-      ? `http://localhost:5173/invite/${inviteCode}`
-      : "http://localhost:5173";
+    const inviteLink = inviteCode ? `${APP_URL}/invite/${inviteCode}` : APP_URL;
 
     const html = `
       <!DOCTYPE html>
@@ -218,7 +215,7 @@ export const MailService = {
         <div style="${styles.container}">
           
           <div style="${styles.header}">
-            <a href="http://localhost:5173" style="${styles.logo}">Settlr.</a>
+            <a href="${APP_URL}" style="${styles.logo}">Settlr.</a>
           </div>
 
           <div style="${styles.body}">
