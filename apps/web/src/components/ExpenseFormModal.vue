@@ -53,7 +53,7 @@ const categories = [
 
 const loading = computed(() => creating.value || updating.value)
 const currentCat = computed(() => categories.find(c => c.value === category.value) || categories[7])
-const currentPayer = computed(() => props.group?.members?.find((m: any) => m.user.id === paidById.value)?.user)
+
 const totalPaid = computed(() => Object.values(payers.value).reduce((s, v) => s + (v || 0), 0))
 
 // Participants who are selected (for display)

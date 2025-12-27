@@ -49,7 +49,7 @@ const promptState = ref({
   title: '',
   message: '',
   placeholder: '',
-  onConfirm: (val: string) => {}
+  onConfirm: (_val: string) => {}
 })
 
 // Queries

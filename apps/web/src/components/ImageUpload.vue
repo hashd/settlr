@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { supabase } from '@/lib/supabase'
 
-const props = defineProps<{
+defineProps<{
   modelValue?: string | null
 }>()
 

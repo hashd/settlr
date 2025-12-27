@@ -152,6 +152,7 @@ builder.queryField("dashboard", (t) =>
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
       for (const expense of allExpenses) {
+        if (!expense.paidById || !expense.paidBy) continue;
         const isRecent = new Date(expense.date) >= thirtyDaysAgo;
 
         // Track category distribution (global)

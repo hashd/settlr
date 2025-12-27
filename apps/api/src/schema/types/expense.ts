@@ -74,6 +74,7 @@ type ExpenseShape = {
     userId: string;
     text: string;
     createdAt: Date;
+    updatedAt: Date;
     user: {
       id: string;
       email: string;
@@ -167,6 +168,7 @@ const ExpenseShare = builder.objectRef<{
     email: string;
     name: string;
     avatarUrl: string | null;
+    isPseudo: boolean;
     createdAt: Date;
   };
 }>("ExpenseShare");
@@ -199,6 +201,8 @@ const ExpensePayer = builder.objectRef<{
     email: string;
     name: string;
     avatarUrl: string | null;
+    isPseudo: boolean;
+    createdAt: Date;
   };
 }>("ExpensePayer");
 

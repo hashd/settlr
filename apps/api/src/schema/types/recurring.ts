@@ -114,7 +114,10 @@ builder.mutationField("createRecurringExpense", (t) =>
         if (nextDueDate <= now) {
           nextDueDate.setMonth(nextDueDate.getMonth() + 1);
         }
-      } else if (args.frequency === "WEEKLY" && args.dayOfWeek !== null) {
+      } else if (
+        args.frequency === "WEEKLY" &&
+        typeof args.dayOfWeek === "number"
+      ) {
         const daysUntil = (args.dayOfWeek - now.getDay() + 7) % 7 || 7;
         nextDueDate.setDate(now.getDate() + daysUntil);
       } else if (args.frequency === "BIWEEKLY") {

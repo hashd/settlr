@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQuery, useMutation } from '@vue/apollo-composable'
-import { MY_INVITES_QUERY, RESPOND_TO_INVITE_MUTATION, DASHBOARD_QUERY } from '@/graphql/operations'
+import { MY_INVITES_QUERY, RESPOND_TO_INVITE_MUTATION } from '@/graphql/operations'
 import { computed } from 'vue'
 
 const { result, loading, refetch } = useQuery(MY_INVITES_QUERY)

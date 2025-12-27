@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 
-export type ToastType = "success" | "error" | "info";
+export type ToastType = "success" | "error" | "info" | "warning";
 
 export interface Toast {
   id: string;
@@ -43,6 +43,10 @@ export const useToastStore = defineStore("toast", () => {
     addToast(message, "error", duration);
   }
 
+  function warning(message: string, duration = 3000) {
+    addToast(message, "warning", duration);
+  }
+
   function info(message: string, duration = 3000) {
     addToast(message, "info", duration);
   }
@@ -53,6 +57,7 @@ export const useToastStore = defineStore("toast", () => {
     removeToast,
     success,
     error,
+    warning,
     info,
   };
 });
