@@ -1,22 +1,23 @@
 import { builder } from "../builder.js";
 import { prisma } from "../../lib/prisma.js";
 import { User } from "./user.js";
+import type { Comment as PrismaComment } from "@prisma/client";
 
-const Comment = builder.objectRef<any>("Comment");
+const Comment = builder.objectRef<PrismaComment>("Comment");
 
 builder.objectType(Comment, {
-  fields: (t: any) => ({
+  fields: (t) => ({
     id: t.exposeString("id"),
     text: t.exposeString("text"),
     userId: t.exposeString("userId"),
     expenseId: t.exposeString("expenseId"),
     createdAt: t.field({
       type: "DateTime",
-      resolve: (root: any) => root.createdAt,
+      resolve: (root) => root.createdAt,
     }),
     user: t.field({
       type: User,
-      resolve: async (comment: any) =>
+      resolve: async (comment) =>
         prisma.user.findUniqueOrThrow({ where: { id: comment.userId } }),
     }),
   }),
@@ -29,7 +30,7 @@ builder.mutationField("createComment", (t) =>
       expenseId: t.arg.string({ required: true }),
       text: t.arg.string({ required: true }),
     },
-    resolve: async (_root: any, args: any, ctx: any) => {
+    resolve: async (_root, args, ctx) => {
       if (!ctx.userId) throw new Error("Not authenticated");
 
       return prisma.comment.create({

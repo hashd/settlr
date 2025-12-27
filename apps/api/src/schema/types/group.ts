@@ -5,7 +5,20 @@ import { logActivity } from "../../lib/logging.js";
 
 // Enums
 const GroupCategory = builder.enumType("GroupCategory", {
-  values: ["TRIP", "HOME", "COUPLE", "FRIENDS", "WORK", "OTHER"] as const,
+  values: [
+    "TRIP",
+    "HOME",
+    "COUPLE",
+    "FRIENDS",
+    "WORK",
+    "FAMILY",
+    "STUDENT",
+    "OFFICE",
+    "CLUB",
+    "DINING",
+    "HOBBY",
+    "OTHER",
+  ] as const,
 });
 
 const MemberRole = builder.enumType("MemberRole", {
@@ -17,7 +30,19 @@ const Group = builder.objectRef<{
   id: string;
   name: string;
   icon: string;
-  category: "TRIP" | "HOME" | "COUPLE" | "FRIENDS" | "WORK" | "OTHER";
+  category:
+    | "TRIP"
+    | "HOME"
+    | "COUPLE"
+    | "FRIENDS"
+    | "WORK"
+    | "FAMILY"
+    | "STUDENT"
+    | "OFFICE"
+    | "CLUB"
+    | "DINING"
+    | "HOBBY"
+    | "OTHER";
   simplifyDebts: boolean;
   createdAt: Date;
 }>("Group");
@@ -109,6 +134,7 @@ const GroupMember = builder.objectRef<{
     email: string;
     name: string;
     avatarUrl: string | null;
+    isPseudo: boolean;
     createdAt: Date;
   };
 }>("GroupMember");
@@ -171,6 +197,7 @@ const Balance = builder.objectRef<{
     name: string;
     email: string;
     avatarUrl: string | null;
+    isPseudo: boolean;
     createdAt: Date;
   };
   owee?: {
@@ -178,6 +205,7 @@ const Balance = builder.objectRef<{
     name: string;
     email: string;
     avatarUrl: string | null;
+    isPseudo: boolean;
     createdAt: Date;
   };
 }>("Balance");
@@ -399,6 +427,7 @@ builder.queryField("exportGroupData", (t) =>
 
       // Process expenses
       for (const expense of expenses) {
+        if (!expense.paidById || !expense.paidBy) continue;
         const payerId = expense.paidById;
         userNames[payerId] = expense.paidBy.name;
 
@@ -615,7 +644,7 @@ builder.mutationField("deleteGroup", (t) =>
       // Check permission: group admin
       const member = await prisma.groupMember.findUnique({
         where: {
-          groupId_userId: {
+          userId_groupId: {
             groupId: args.id,
             userId: ctx.userId,
           },
@@ -651,7 +680,7 @@ builder.mutationField("leaveGroup", (t) =>
       // Check if member exists
       const member = await prisma.groupMember.findUnique({
         where: {
-          groupId_userId: {
+          userId_groupId: {
             groupId: args.groupId,
             userId: ctx.userId,
           },
@@ -679,7 +708,7 @@ builder.mutationField("leaveGroup", (t) =>
 
       await prisma.groupMember.delete({
         where: {
-          groupId_userId: {
+          userId_groupId: {
             groupId: args.groupId,
             userId: ctx.userId,
           },
@@ -711,7 +740,7 @@ builder.mutationField("removeMember", (t) =>
       // Check permission: requester is admin
       const requester = await prisma.groupMember.findUnique({
         where: {
-          groupId_userId: {
+          userId_groupId: {
             groupId: args.groupId,
             userId: ctx.userId,
           },
@@ -729,7 +758,7 @@ builder.mutationField("removeMember", (t) =>
 
       const removedMember = await prisma.groupMember.delete({
         where: {
-          groupId_userId: {
+          userId_groupId: {
             groupId: args.groupId,
             userId: args.userId,
           },
@@ -741,7 +770,7 @@ builder.mutationField("removeMember", (t) =>
         groupId: args.groupId,
         actorId: ctx.userId,
         type: "MEMBER_REMOVE",
-        description: `removed ${removedMember.user.name}`,
+        description: `removed ${(removedMember as any).user.name}`,
         metadata: { userId: args.userId },
       });
 
@@ -764,7 +793,7 @@ builder.mutationField("updateMemberRole", (t) =>
       // Check permission: requester is admin
       const requester = await prisma.groupMember.findUnique({
         where: {
-          groupId_userId: {
+          userId_groupId: {
             groupId: args.groupId,
             userId: ctx.userId,
           },
@@ -790,7 +819,7 @@ builder.mutationField("updateMemberRole", (t) =>
 
       const updatedMember = await prisma.groupMember.update({
         where: {
-          groupId_userId: {
+          userId_groupId: {
             groupId: args.groupId,
             userId: args.userId,
           },
@@ -803,7 +832,9 @@ builder.mutationField("updateMemberRole", (t) =>
         groupId: args.groupId,
         actorId: ctx.userId,
         type: "GROUP_UPDATE",
-        description: `changed ${updatedMember.user.name}'s role to ${args.role}`,
+        description: `changed ${(updatedMember as any).user.name}'s role to ${
+          args.role
+        }`,
         metadata: { userId: args.userId, role: args.role },
       });
 
