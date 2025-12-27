@@ -19,7 +19,7 @@ const yoga = createYoga({
       return {};
     }
 
-    const payload = verifyToken(token);
+    const payload = await verifyToken(token);
     if (!payload) {
       return {};
     }

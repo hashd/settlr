@@ -35,7 +35,8 @@ This guide outlines how to deploy the Settlr monorepo (API + Web) to [Render.com
     - **Start Command**: `yarn start`
 4.  **Environment Variables** (Add these):
     - `DATABASE_URL`: Paste the **Internal DB URL** from Step 1.
-    - `JWT_SECRET`: Generate a random string (e.g., run `openssl rand -hex 32` in terminal).
+    - `SUPABASE_JWT_SECRET`: Get this from your Supabase Dashboard (Settings -> API -> JWT Secret). Check if you need to use the value `JWT_SECRET` if the API matches that. (Code supports both `SUPABASE_JWT_SECRET` and `JWT_SECRET`).
+    - `SUPABASE_URL`: Your Supabase Project URL (e.g., `https://xyz.supabase.co`). Required for new RS256/JWKS verification.
     - `RESEND_API_KEY`: Your Resend API key (starts with `re_...`).
     - `PORT`: `10000` (Render default, or leave empty and let Render auto-inject).
 5.  Click **Create Web Service**.
