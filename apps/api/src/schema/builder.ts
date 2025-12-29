@@ -1,9 +1,11 @@
 import SchemaBuilder from "@pothos/core";
+import type { Loaders } from "../lib/loaders.js";
 
 // Context type for GraphQL resolvers
 export interface GraphQLContext {
   userId?: string;
   userEmail?: string;
+  loaders: Loaders;
 }
 
 export const builder = new SchemaBuilder<{

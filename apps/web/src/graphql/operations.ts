@@ -90,6 +90,12 @@ export const GROUPS_QUERY = gql`
       createdAt
       expenseCount
       userBalance
+      isEphemeral
+      startDate
+      endDate
+      isArchived
+      tripStatus
+      daysRemaining
       members {
         id
         role
@@ -111,6 +117,14 @@ export const GROUP_QUERY = gql`
       icon
       category
       simplifyDebts
+      isEphemeral
+      startDate
+      endDate
+      allowPreTripExpenses
+      isArchived
+      archivedAt
+      tripStatus
+      daysRemaining
       members {
         id
         role
@@ -131,12 +145,28 @@ export const CREATE_GROUP_MUTATION = gql`
     $name: String!
     $icon: String
     $category: GroupCategory
+    $isEphemeral: Boolean
+    $startDate: DateTime
+    $endDate: DateTime
+    $allowPreTripExpenses: Boolean
   ) {
-    createGroup(name: $name, icon: $icon, category: $category) {
+    createGroup(
+      name: $name
+      icon: $icon
+      category: $category
+      isEphemeral: $isEphemeral
+      startDate: $startDate
+      endDate: $endDate
+      allowPreTripExpenses: $allowPreTripExpenses
+    ) {
       id
       name
       icon
       category
+      isEphemeral
+      startDate
+      endDate
+      tripStatus
     }
   }
 `;
@@ -319,6 +349,10 @@ export const UPDATE_GROUP_MUTATION = gql`
     $icon: String
     $category: GroupCategory
     $simplifyDebts: Boolean
+    $isEphemeral: Boolean
+    $startDate: DateTime
+    $endDate: DateTime
+    $allowPreTripExpenses: Boolean
   ) {
     updateGroup(
       id: $id
@@ -326,12 +360,42 @@ export const UPDATE_GROUP_MUTATION = gql`
       icon: $icon
       category: $category
       simplifyDebts: $simplifyDebts
+      isEphemeral: $isEphemeral
+      startDate: $startDate
+      endDate: $endDate
+      allowPreTripExpenses: $allowPreTripExpenses
     ) {
       id
       name
       icon
       category
       simplifyDebts
+      isEphemeral
+      startDate
+      endDate
+      allowPreTripExpenses
+      isArchived
+      tripStatus
+    }
+  }
+`;
+
+export const ARCHIVE_GROUP_MUTATION = gql`
+  mutation ArchiveGroup($groupId: String!) {
+    archiveGroup(groupId: $groupId) {
+      id
+      isArchived
+      archivedAt
+    }
+  }
+`;
+
+export const UNARCHIVE_GROUP_MUTATION = gql`
+  mutation UnarchiveGroup($groupId: String!) {
+    unarchiveGroup(groupId: $groupId) {
+      id
+      isArchived
+      archivedAt
     }
   }
 `;

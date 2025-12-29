@@ -7,7 +7,8 @@ import {
   DELETE_GROUP_MUTATION,
   LEAVE_GROUP_MUTATION,
   REMOVE_MEMBER_MUTATION,
-  EXPORT_GROUP_DATA_QUERY
+  EXPORT_GROUP_DATA_QUERY,
+  ARCHIVE_GROUP_MUTATION
 } from '@/graphql/operations'
 import { useToastStore } from '@/stores/toast'
 import ConfirmModal from '@/components/ui/ConfirmModal.vue'
@@ -27,6 +28,7 @@ const { mutate: updateGroup, loading: updating } = useMutation(UPDATE_GROUP_MUTA
 const { mutate: deleteGroup, loading: deleting } = useMutation(DELETE_GROUP_MUTATION)
 const { mutate: leaveGroup, loading: leaving } = useMutation(LEAVE_GROUP_MUTATION)
 const { mutate: removeMember, loading: removing } = useMutation(REMOVE_MEMBER_MUTATION)
+const { mutate: archiveGroup, loading: archiving } = useMutation(ARCHIVE_GROUP_MUTATION)
 
 // Queries
 const { refetch: fetchExport, loading: exporting } = useQuery(
@@ -48,7 +50,7 @@ const category = ref('OTHER')
 const simplifyDebts = ref(true)
 
 // UI state
-const showConfirm = ref<'leave' | 'delete' | null>(null)
+const showConfirm = ref<'leave' | 'delete' | 'archive' | null>(null)
 const showIconPicker = ref(false)
 
 const icons = ['👥', '🏠', '✈️', '💑', '🍕', '🎉', '💼', '🎮', '⚽', '🍔', '🍺', '🛍️']
@@ -127,6 +129,17 @@ async function handleLeave() {
     router.push('/groups')
   } catch (e: any) {
     toast.error(e.message || 'Failed to leave')
+  }
+}
+
+async function handleArchive() {
+  try {
+    await archiveGroup({ groupId: props.group.id })
+    toast.success('Group archived!')
+    emit('updated')
+    emit('close')
+  } catch (e: any) {
+    toast.error(e.message || 'Failed to archive')
   }
 }
 
@@ -288,6 +301,15 @@ async function handleExport() {
                 </svg>
                 {{ exporting ? 'Exporting...' : 'Export CSV' }}
               </button>
+              
+              <!-- Archive Button (only for admins, only if not archived) -->
+              <button v-if="isAdmin && !group?.isArchived" class="action-btn" @click="showConfirm = 'archive'">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 8v13H3V8M1 3h22v5H1V3zM10 12h4"/>
+                </svg>
+                Archive Group
+              </button>
+              
               <button class="action-btn warn" @click="showConfirm = 'leave'">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
@@ -311,9 +333,18 @@ async function handleExport() {
     <Transition name="fade">
       <div v-if="showConfirm" class="confirm-overlay" @click.self="showConfirm = null">
         <div class="confirm-dialog">
-          <h3>{{ showConfirm === 'delete' ? 'Delete group?' : 'Leave group?' }}</h3>
+          <h3>{{ 
+            showConfirm === 'delete' ? 'Delete group?' : 
+            showConfirm === 'archive' ? 'Archive group?' : 
+            'Leave group?' 
+          }}</h3>
           <p v-if="showConfirm === 'delete'">
             This will permanently delete <strong>{{ group?.name }}</strong> and all its data.
+          </p>
+          <p v-else-if="showConfirm === 'archive'">
+            <strong>{{ group?.name }}</strong> will be archived. No new expenses can be added until it's unarchived.
+            <br><br>
+            <em style="color: #92400e;">Note: All balances must be settled before archiving.</em>
           </p>
           <p v-else>
             You'll lose access to <strong>{{ group?.name }}</strong> and its history.
@@ -321,16 +352,17 @@ async function handleExport() {
           <div class="confirm-actions">
             <button class="btn-cancel" @click="showConfirm = null">Cancel</button>
             <button 
-              :class="['btn-confirm', showConfirm === 'delete' ? 'danger' : 'warn']"
-              @click="showConfirm === 'delete' ? handleDelete() : handleLeave()"
-              :disabled="deleting || leaving"
+              :class="['btn-confirm', showConfirm === 'delete' ? 'danger' : showConfirm === 'archive' ? '' : 'warn']"
+              @click="showConfirm === 'delete' ? handleDelete() : showConfirm === 'archive' ? handleArchive() : handleLeave()"
+              :disabled="deleting || leaving || archiving"
             >
-              {{ deleting || leaving ? '...' : (showConfirm === 'delete' ? 'Delete' : 'Leave') }}
+              {{ deleting || leaving || archiving ? '...' : (showConfirm === 'delete' ? 'Delete' : showConfirm === 'archive' ? 'Archive' : 'Leave') }}
             </button>
           </div>
         </div>
       </div>
     </Transition>
+
   </Teleport>
   <ConfirmModal
     :open="confirmState.open"

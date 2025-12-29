@@ -6,9 +6,11 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")  // Used for migrations (bypasses PgBouncer)
 }
+
 
 // ============================================
 // User & Authentication
@@ -60,6 +62,14 @@ model Group {
   simplifyDebts Boolean @default(true)
   defaultCurrency String @default("INR")
   
+  // Ephemeral/Trip mode fields
+  isEphemeral          Boolean   @default(false)
+  startDate            DateTime?
+  endDate              DateTime?
+  allowPreTripExpenses Boolean   @default(true)
+  isArchived           Boolean   @default(false)
+  archivedAt           DateTime?
+  
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
@@ -73,6 +83,7 @@ model Group {
   
   @@map("groups")
 }
+
 
 enum GroupCategory {
   TRIP
@@ -167,6 +178,7 @@ model Expense {
   shares ExpenseShare[]
   comments Comment[]
   
+  @@index([groupId, date])  // Optimize: sorted expense lists per group
   @@map("expenses")
 }
 
@@ -182,6 +194,7 @@ model ExpensePayer {
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   
   @@unique([expenseId, userId])
+  @@index([expenseId])  // Optimize: batch loading payers
   @@map("expense_payers")
 }
 
@@ -215,6 +228,8 @@ model ExpenseShare {
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   
   @@unique([expenseId, userId])
+  @@index([expenseId])  // Optimize: batch loading shares
+  @@index([userId])     // Optimize: balance calculations
   @@map("expense_shares")
 }
 
@@ -239,6 +254,7 @@ model Settlement {
   payer    User  @relation("SettlementPayer", fields: [payerId], references: [id])
   receiver User  @relation("SettlementReceiver", fields: [receiverId], references: [id])
   
+  @@index([groupId, createdAt])  // Optimize: settlement history queries
   @@map("settlements")
 }
 
@@ -306,6 +322,7 @@ model Activity {
   group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
   actor User  @relation(fields: [actorId], references: [id])
 
+  @@index([groupId, createdAt])  // Optimize: activity feed queries
   @@map("activities")
 }
 

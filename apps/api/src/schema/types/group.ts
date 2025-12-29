@@ -25,6 +25,11 @@ const MemberRole = builder.enumType("MemberRole", {
   values: ["ADMIN", "MEMBER"] as const,
 });
 
+// Trip status enum for ephemeral groups
+const TripStatus = builder.enumType("TripStatus", {
+  values: ["UPCOMING", "ACTIVE", "ENDED", "ARCHIVED"] as const,
+});
+
 // Group type
 const Group = builder.objectRef<{
   id: string;
@@ -45,6 +50,13 @@ const Group = builder.objectRef<{
     | "OTHER";
   simplifyDebts: boolean;
   createdAt: Date;
+  // Ephemeral fields
+  isEphemeral: boolean;
+  startDate: Date | null;
+  endDate: Date | null;
+  allowPreTripExpenses: boolean;
+  isArchived: boolean;
+  archivedAt: Date | null;
 }>("Group");
 
 builder.objectType(Group, {
@@ -55,22 +67,55 @@ builder.objectType(Group, {
     category: t.expose("category", { type: GroupCategory }),
     simplifyDebts: t.exposeBoolean("simplifyDebts"),
     createdAt: t.expose("createdAt", { type: "DateTime" }),
+    // Ephemeral/Trip mode fields
+    isEphemeral: t.exposeBoolean("isEphemeral"),
+    startDate: t.expose("startDate", { type: "DateTime", nullable: true }),
+    endDate: t.expose("endDate", { type: "DateTime", nullable: true }),
+    allowPreTripExpenses: t.exposeBoolean("allowPreTripExpenses"),
+    isArchived: t.exposeBoolean("isArchived"),
+    archivedAt: t.expose("archivedAt", { type: "DateTime", nullable: true }),
+    // Computed trip status
+    tripStatus: t.field({
+      type: TripStatus,
+      nullable: true,
+      resolve: (group) => {
+        if (!group.isEphemeral) return null;
+        if (group.isArchived) return "ARCHIVED";
+
+        const now = new Date();
+        if (group.startDate && now < group.startDate) return "UPCOMING";
+        if (group.endDate && now > group.endDate) return "ENDED";
+        return "ACTIVE";
+      },
+    }),
+    // Days remaining (for active trips)
+    daysRemaining: t.int({
+      nullable: true,
+      resolve: (group) => {
+        if (!group.isEphemeral || !group.endDate || group.isArchived)
+          return null;
+
+        const now = new Date();
+        if (now > group.endDate) return 0;
+
+        const diffTime = group.endDate.getTime() - now.getTime();
+        return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      },
+    }),
     members: t.field({
       type: [GroupMember],
-      resolve: async (group) => {
-        return prisma.groupMember.findMany({
-          where: { groupId: group.id },
-          include: { user: true },
-        });
+      resolve: async (group, _args, ctx) => {
+        // Use DataLoader for batched loading
+        return ctx.loaders.membersByGroupId.load(group.id);
       },
     }),
     expenseCount: t.int({
-      resolve: async (group) => {
-        return prisma.expense.count({
-          where: { groupId: group.id },
-        });
+      resolve: async (group, _args, ctx) => {
+        // Use DataLoader for batched loading
+        return ctx.loaders.expenseCountByGroupId.load(group.id);
       },
     }),
+
     // User's net balance in this group (positive = owed to them, negative = they owe)
     userBalance: t.int({
       nullable: true,
@@ -167,7 +212,7 @@ builder.queryField("groups", (t) =>
           },
         },
         orderBy: { updatedAt: "desc" },
-      });
+      }) as any;
     },
   })
 );
@@ -182,7 +227,7 @@ builder.queryField("group", (t) =>
     resolve: async (_root, args) => {
       return prisma.group.findUnique({
         where: { id: args.id },
-      });
+      }) as any;
     },
   })
 );
@@ -517,15 +562,31 @@ builder.mutationField("createGroup", (t) =>
       name: t.arg.string({ required: true }),
       icon: t.arg.string({ defaultValue: "👥" }),
       category: t.arg({ type: GroupCategory, defaultValue: "OTHER" }),
+      // Ephemeral group fields
+      isEphemeral: t.arg.boolean({ defaultValue: false }),
+      startDate: t.arg({ type: "DateTime" }),
+      endDate: t.arg({ type: "DateTime" }),
+      allowPreTripExpenses: t.arg.boolean({ defaultValue: true }),
     },
     resolve: async (_root, args, ctx) => {
       if (!ctx.userId) throw new Error("Not authenticated");
+
+      // Validate dates for ephemeral groups
+      if (args.isEphemeral) {
+        if (args.endDate && args.startDate && args.endDate <= args.startDate) {
+          throw new Error("End date must be after start date");
+        }
+      }
 
       return prisma.group.create({
         data: {
           name: args.name,
           icon: args.icon ?? "👥",
           category: args.category ?? "OTHER",
+          isEphemeral: args.isEphemeral ?? false,
+          startDate: args.startDate ?? null,
+          endDate: args.endDate ?? null,
+          allowPreTripExpenses: args.allowPreTripExpenses ?? true,
           members: {
             create: {
               userId: ctx.userId,
@@ -533,7 +594,7 @@ builder.mutationField("createGroup", (t) =>
             },
           },
         },
-      });
+      }) as any;
     },
   })
 );
@@ -586,6 +647,11 @@ builder.mutationField("updateGroup", (t) =>
       icon: t.arg.string(),
       category: t.arg({ type: GroupCategory }),
       simplifyDebts: t.arg.boolean(),
+      // Ephemeral group fields
+      isEphemeral: t.arg.boolean(),
+      startDate: t.arg({ type: "DateTime" }),
+      endDate: t.arg({ type: "DateTime" }),
+      allowPreTripExpenses: t.arg.boolean(),
     },
     resolve: async (_root, args, ctx) => {
       if (!ctx.userId) throw new Error("Not authenticated");
@@ -604,6 +670,11 @@ builder.mutationField("updateGroup", (t) =>
         throw new Error("Only admins can update the group");
       }
 
+      // Validate dates
+      if (args.endDate && args.startDate && args.endDate <= args.startDate) {
+        throw new Error("End date must be after start date");
+      }
+
       const group = await prisma.group.update({
         where: { id: args.id },
         data: {
@@ -611,6 +682,10 @@ builder.mutationField("updateGroup", (t) =>
           icon: args.icon ?? undefined,
           category: args.category ?? undefined,
           simplifyDebts: args.simplifyDebts ?? undefined,
+          isEphemeral: args.isEphemeral ?? undefined,
+          startDate: args.startDate !== undefined ? args.startDate : undefined,
+          endDate: args.endDate !== undefined ? args.endDate : undefined,
+          allowPreTripExpenses: args.allowPreTripExpenses ?? undefined,
         },
       });
 
@@ -627,7 +702,7 @@ builder.mutationField("updateGroup", (t) =>
         },
       });
 
-      return group;
+      return group as any;
     },
   })
 );
@@ -839,6 +914,132 @@ builder.mutationField("updateMemberRole", (t) =>
       });
 
       return updatedMember;
+    },
+  })
+);
+
+// Archive Group - requires all balances settled
+builder.mutationField("archiveGroup", (t) =>
+  t.field({
+    type: Group,
+    args: {
+      groupId: t.arg.string({ required: true }),
+    },
+    resolve: async (_root, args, ctx) => {
+      if (!ctx.userId) throw new Error("Not authenticated");
+
+      // Check admin permission
+      const member = await prisma.groupMember.findUnique({
+        where: {
+          userId_groupId: {
+            groupId: args.groupId,
+            userId: ctx.userId,
+          },
+        },
+      });
+
+      if (!member || member.role !== "ADMIN") {
+        throw new Error("Only admins can archive the group");
+      }
+
+      // Check for unsettled balances
+      const expenses = await prisma.expense.findMany({
+        where: { groupId: args.groupId },
+        include: { shares: true },
+      });
+
+      const settlements = await prisma.settlement.findMany({
+        where: { groupId: args.groupId },
+      });
+
+      // Calculate net balances
+      const userBalances: Record<string, number> = {};
+      const add = (id: string, amt: number) => {
+        userBalances[id] = (userBalances[id] || 0) + amt;
+      };
+
+      for (const e of expenses) {
+        if (e.paidById) add(e.paidById, e.amount);
+        for (const s of e.shares) add(s.userId, -s.amount);
+      }
+
+      for (const s of settlements) {
+        add(s.payerId, s.amount);
+        add(s.receiverId, -s.amount);
+      }
+
+      // Check if any balance is non-zero (using threshold of ₹1)
+      const hasUnsettledBalance = Object.values(userBalances).some(
+        (balance) => Math.abs(balance) > 100 // 100 paise = ₹1
+      );
+
+      if (hasUnsettledBalance) {
+        throw new Error(
+          "Cannot archive: There are unsettled balances. Please settle all debts first."
+        );
+      }
+
+      // Archive the group
+      const group = await prisma.group.update({
+        where: { id: args.groupId },
+        data: {
+          isArchived: true,
+          archivedAt: new Date(),
+        },
+      });
+
+      await logActivity({
+        groupId: args.groupId,
+        actorId: ctx.userId,
+        type: "GROUP_UPDATE",
+        description: "archived the group",
+      });
+
+      return group as any;
+    },
+  })
+);
+
+// Unarchive Group
+builder.mutationField("unarchiveGroup", (t) =>
+  t.field({
+    type: Group,
+    args: {
+      groupId: t.arg.string({ required: true }),
+    },
+    resolve: async (_root, args, ctx) => {
+      if (!ctx.userId) throw new Error("Not authenticated");
+
+      // Check admin permission
+      const member = await prisma.groupMember.findUnique({
+        where: {
+          userId_groupId: {
+            groupId: args.groupId,
+            userId: ctx.userId,
+          },
+        },
+      });
+
+      if (!member || member.role !== "ADMIN") {
+        throw new Error("Only admins can unarchive the group");
+      }
+
+      const group = await prisma.group.update({
+        where: { id: args.groupId },
+        data: {
+          isArchived: false,
+          archivedAt: null,
+        },
+      });
+
+      await logActivity({
+        groupId: args.groupId,
+        actorId: ctx.userId,
+        type: "GROUP_UPDATE",
+        description: "unarchived the group",
+      });
+
+      return group as any;
     },
   })
 );

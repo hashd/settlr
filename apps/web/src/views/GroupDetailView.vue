@@ -13,7 +13,8 @@ import {
   GROUP_ACTIVITIES_QUERY,
   UPDATE_MEMBER_ROLE_MUTATION,
   CLAIM_PSEUDO_USER_MUTATION,
-  SEND_PAYMENT_REMINDER_MUTATION
+  SEND_PAYMENT_REMINDER_MUTATION,
+  UNARCHIVE_GROUP_MUTATION
 } from '@/graphql/operations'
 import InviteMemberModal from '@/components/InviteMemberModal.vue'
 import GroupSettingsModal from '@/components/GroupSettingsModal.vue'
@@ -22,11 +23,12 @@ import CommentSection from '@/components/CommentSection.vue'
 import SpendingAnalysis from '@/components/SpendingAnalysis.vue'
 import RecurringExpenses from '@/components/RecurringExpenses.vue'
 import BalanceAdjustmentModal from '@/components/BalanceAdjustmentModal.vue'
-import SpendingCharts from '@/components/SpendingCharts.vue'
+
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import ConfirmModal from '@/components/ui/ConfirmModal.vue'
 import PromptModal from '@/components/ui/PromptModal.vue'
+import ActionSheet from '@/components/ui/ActionSheet.vue'
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -79,6 +81,7 @@ const { mutate: deleteExpense, loading: deletingExpense } = useMutation(DELETE_E
 const { mutate: cancelInvite, loading: cancellingInvite } = useMutation(CANCEL_INVITE_MUTATION)
 const { mutate: updateMemberRole, loading: updatingRole } = useMutation(UPDATE_MEMBER_ROLE_MUTATION)
 const { mutate: claimPseudoUser, loading: claimingUser } = useMutation(CLAIM_PSEUDO_USER_MUTATION)
+const { mutate: unarchiveGroup, loading: unarchiving } = useMutation(UNARCHIVE_GROUP_MUTATION)
 
 // Modal states
 const showExpenseModal = ref(false)
@@ -87,7 +90,11 @@ const showInviteModal = ref(false)
 const showDeleteConfirm = ref(false)
 const showSettingsModal = ref(false)
 const showAdjustModal = ref(false)
+const showActionSheet = ref(false)
 const expandedExpenseId = ref<string | null>(null)
+
+// Template refs
+const recurringExpensesRef = ref<InstanceType<typeof RecurringExpenses> | null>(null)
 
 // Expense state
 const editingExpense = ref<any>(null)
@@ -173,6 +180,46 @@ const pendingInvites = computed(() => invitesResult.value?.groupInvites?.filter(
 const activities = computed(() => activitiesResult.value?.groupActivities || [])
 const currentUserMember = computed(() => members.value.find((m: any) => m.user.id === authStore.user?.id))
 const isAdmin = computed(() => currentUserMember.value?.role === 'ADMIN')
+
+// Ephemeral group helpers
+const canAddExpense = computed(() => {
+  if (!group.value) return false
+  if (group.value.isArchived) return false
+  
+  if (group.value.isEphemeral) {
+    const now = new Date()
+    // Before start date
+    if (group.value.startDate && now < new Date(group.value.startDate)) {
+      if (!group.value.allowPreTripExpenses) return false
+    }
+    // After end date
+    if (group.value.endDate && now > new Date(group.value.endDate)) {
+      return false
+    }
+  }
+  return true
+})
+
+const tripStatusLabel = computed(() => {
+  if (!group.value?.isEphemeral) return null
+  if (group.value.isArchived) return 'Archived'
+  if (group.value.tripStatus === 'UPCOMING') return 'Upcoming'
+  if (group.value.tripStatus === 'ENDED') return 'Ended'
+  if (group.value.tripStatus === 'ACTIVE' && group.value.daysRemaining !== null) {
+    return `${group.value.daysRemaining} day${group.value.daysRemaining !== 1 ? 's' : ''} left`
+  }
+  return null
+})
+
+const formatTripDates = computed(() => {
+  if (!group.value?.isEphemeral) return null
+  const start = group.value.startDate ? new Date(group.value.startDate).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }) : null
+  const end = group.value.endDate ? new Date(group.value.endDate).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }) : null
+  if (start && end) return `${start} → ${end}`
+  if (start) return `From ${start}`
+  if (end) return `Until ${end}`
+  return null
+})
 const adminsCount = computed(() => members.value.filter((m: any) => m.role === 'ADMIN').length)
 
 const totalBalance = computed(() => {
@@ -187,6 +234,30 @@ function openAddExpense() {
   editingExpense.value = null
   showExpenseModal.value = true
 }
+
+function handleActionSheet(action: string) {
+  switch (action) {
+    case 'expense':
+      openAddExpense()
+      break
+    case 'recurring':
+      // Switch to expenses tab and scroll to recurring section
+      activeTab.value = 'expenses'
+      setTimeout(() => {
+        recurringExpensesRef.value?.openForm()
+      }, 100)
+      break
+    case 'settle':
+      // If there are debts, open settle modal for the first one
+      if (debts.value.length > 0) {
+        openSettleModal(debts.value[0])
+      } else {
+        toast.info('No balances to settle!')
+      }
+      break
+  }
+}
+
 
 function openSettleModal(debt: any) {
   selectedDebt.value = {
@@ -206,6 +277,18 @@ function onExpenseSaved() {
   showExpenseModal.value = false
   editingExpense.value = null
 }
+
+async function handleUnarchive() {
+  if (!group.value) return
+  try {
+    await unarchiveGroup({ groupId: group.value.id })
+    toast.success('Group unarchived!')
+    refetchGroup()
+  } catch (e: any) {
+    toast.error(e.message || 'Failed to unarchive')
+  }
+}
+
 
 async function handleSettle() {
   if (!selectedDebt.value || !settlementAmount.value) return
@@ -429,8 +512,30 @@ function getInitials(name: string) {
     </div>
 
     <main v-else-if="group" class="main-content">
+      <!-- Archived Banner -->
+      <div v-if="group.isArchived" class="archived-banner">
+        <div class="archived-content">
+          <span class="archived-icon">🔒</span>
+          <div class="archived-text">
+            <strong>This group is archived</strong>
+            <span>No new expenses can be added</span>
+          </div>
+        </div>
+        <button v-if="isAdmin" class="unarchive-btn" @click="handleUnarchive" :disabled="unarchiving">
+          {{ unarchiving ? 'Unarchiving...' : 'Unarchive' }}
+        </button>
+      </div>
+
       <!-- Compact Balance Card -->
-      <section class="balance-card">
+      <section class="balance-card" :class="{ 'has-trip': group.isEphemeral }">
+        <!-- Trip Info Row -->
+        <div v-if="group.isEphemeral" class="trip-info-row">
+          <span class="trip-dates" v-if="formatTripDates">📅 {{ formatTripDates }}</span>
+          <span v-if="tripStatusLabel" :class="['trip-status-badge', group.tripStatus?.toLowerCase()]">
+            {{ tripStatusLabel }}
+          </span>
+        </div>
+        
         <div class="balance-row">
           <div class="balance-info">
             <span class="balance-label">{{ debts.length ? 'Balance' : 'All Clear' }}</span>
@@ -442,6 +547,7 @@ function getInitials(name: string) {
           </div>
         </div>
       </section>
+
 
       <!-- Icon Tab Bar -->
       <nav class="tab-bar">
@@ -567,10 +673,9 @@ function getInitials(name: string) {
             </div>
             
             <!-- Recurring Expenses Section -->
-            <RecurringExpenses v-if="group" :group-id="groupId" :members="group.members" @refresh="refetchExpenses" />
+            <RecurringExpenses ref="recurringExpensesRef" v-if="group" :group-id="groupId" :members="group.members" @refresh="refetchExpenses" />
             
-            <!-- Spending Charts -->
-            <SpendingCharts v-if="expenses.length > 0" :expenses="expenses" />
+
           </div>
         </Transition>
 
@@ -644,12 +749,16 @@ function getInitials(name: string) {
       </div>
     </main>
 
-    <!-- FAB -->
-    <button v-if="group" class="fab" :class="{ visible: isVisible }" @click="openAddExpense">
+    <!-- FAB (hidden when archived or outside allowed dates) -->
+    <button v-if="group && canAddExpense" class="fab" :class="{ visible: isVisible }" @click="showActionSheet = true">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <path d="M12 5v14M5 12h14" stroke-linecap="round"/>
       </svg>
     </button>
+
+
+    <!-- Action Sheet -->
+    <ActionSheet :open="showActionSheet" @close="showActionSheet = false" @action="handleActionSheet" />
 
     <!-- Settle Modal -->
     <Teleport to="body">
@@ -867,6 +976,117 @@ function getInitials(name: string) {
   font-weight: 500;
   color: var(--color-text-dimmed);
 }
+
+/* Archived Banner */
+.archived-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  border: 1px solid #fcd34d;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.archived-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.archived-icon {
+  font-size: 1.25rem;
+}
+
+.archived-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.archived-text strong {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #92400e;
+}
+
+.archived-text span {
+  font-size: 0.75rem;
+  color: #a16207;
+}
+
+.unarchive-btn {
+  padding: 8px 14px;
+  background: white;
+  border: 1px solid #d97706;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #b45309;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.unarchive-btn:hover {
+  background: #fffbeb;
+}
+
+.unarchive-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Trip Info */
+.balance-card.has-trip {
+  padding-top: 0;
+}
+
+.trip-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.trip-dates {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.trip-status-badge {
+  padding: 4px 10px;
+  border-radius: 100px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.trip-status-badge.upcoming {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.trip-status-badge.active {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.trip-status-badge.ended {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.trip-status-badge.archived {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
 
 /* Tab Bar */
 .tab-bar {

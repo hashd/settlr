@@ -12,6 +12,12 @@ interface Group {
   createdAt: string
   expenseCount: number
   userBalance: number | null
+  isEphemeral: boolean
+  startDate: string | null
+  endDate: string | null
+  isArchived: boolean
+  tripStatus: 'UPCOMING' | 'ACTIVE' | 'ENDED' | 'ARCHIVED' | null
+  daysRemaining: number | null
   members: { id: string; user: { id: string; name: string } }[]
 }
 
@@ -24,6 +30,12 @@ const showModal = ref(false)
 const formName = ref('')
 const formIcon = ref('👥')
 const formCategory = ref('OTHER')
+
+// Trip mode fields
+const formIsEphemeral = ref(false)
+const formStartDate = ref('')
+const formEndDate = ref('')
+const formAllowPreTrip = ref(true)
 
 // Filter & Sort
 const search = ref('')
@@ -44,8 +56,12 @@ const groups = computed(() => {
     list = list.filter(g => g.category === filterCat.value)
   }
   
-  // Sort
+  // Sort - move archived to bottom
   list = [...list].sort((a, b) => {
+    // Archived groups go to bottom
+    if (a.isArchived && !b.isArchived) return 1
+    if (!a.isArchived && b.isArchived) return -1
+    
     if (sortBy.value === 'name') return a.name.localeCompare(b.name)
     if (sortBy.value === 'balance') return Math.abs(b.userBalance || 0) - Math.abs(a.userBalance || 0)
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -72,12 +88,33 @@ function formatBalance(bal: number | null) {
 
 async function handleCreate() {
   if (!formName.value.trim()) return
+  
+  // Validate dates for ephemeral groups
+  if (formIsEphemeral.value && formEndDate.value && formStartDate.value) {
+    if (new Date(formEndDate.value) <= new Date(formStartDate.value)) {
+      toast.error('End date must be after start date')
+      return
+    }
+  }
+  
   try {
-    await createGroup({ name: formName.value, icon: formIcon.value, category: formCategory.value })
+    await createGroup({ 
+      name: formName.value, 
+      icon: formIcon.value, 
+      category: formCategory.value,
+      isEphemeral: formIsEphemeral.value,
+      startDate: formIsEphemeral.value && formStartDate.value ? new Date(formStartDate.value).toISOString() : null,
+      endDate: formIsEphemeral.value && formEndDate.value ? new Date(formEndDate.value).toISOString() : null,
+      allowPreTripExpenses: formAllowPreTrip.value
+    })
     showModal.value = false
     formName.value = ''
     formIcon.value = '👥'
     formCategory.value = 'OTHER'
+    formIsEphemeral.value = false
+    formStartDate.value = ''
+    formEndDate.value = ''
+    formAllowPreTrip.value = true
     refetch()
     toast.success('Group created!')
   } catch (e: any) {
@@ -159,13 +196,21 @@ onMounted(() => setTimeout(() => visible.value = true, 50))
             <span class="row-sub">{{ g.members.length }} member{{ g.members.length !== 1 ? 's' : '' }} · {{ g.expenseCount }} expense{{ g.expenseCount !== 1 ? 's' : '' }}</span>
           </div>
           <div class="row-end">
+            <!-- Trip status badge -->
+            <span v-if="g.isArchived" class="trip-badge archived">🔒 Archived</span>
+            <span v-else-if="g.tripStatus === 'UPCOMING'" class="trip-badge upcoming">⏳ Upcoming</span>
+            <span v-else-if="g.tripStatus === 'ENDED'" class="trip-badge ended">🟠 Ended</span>
+            <span v-else-if="g.tripStatus === 'ACTIVE' && g.daysRemaining !== null" class="trip-badge active">
+              {{ g.daysRemaining }} day{{ g.daysRemaining !== 1 ? 's' : '' }} left
+            </span>
+            <!-- Balance -->
             <span 
-              v-if="g.userBalance && g.userBalance !== 0" 
+              v-if="g.userBalance && g.userBalance !== 0 && !g.isArchived" 
               :class="['row-balance', g.userBalance > 0 ? 'positive' : 'negative']"
             >
               {{ formatBalance(g.userBalance) }}
             </span>
-            <span v-else class="row-settled">settled</span>
+            <span v-else-if="!g.isArchived && (!g.userBalance || g.userBalance === 0)" class="row-settled">settled</span>
           </div>
         </router-link>
       </div>
@@ -203,6 +248,37 @@ onMounted(() => setTimeout(() => visible.value = true, 50))
                   :class="['cat-btn', { active: formCategory === c.value }]"
                   @click="formCategory = c.value"
                 >{{ c.label }}</button>
+              </div>
+
+              <!-- Trip Mode Section -->
+              <div class="trip-section">
+                <label class="toggle-row">
+                  <span class="toggle-label">
+                    📅 Trip Mode
+                    <span class="toggle-hint">Set dates for ephemeral groups</span>
+                  </span>
+                  <input type="checkbox" v-model="formIsEphemeral" class="toggle-input" />
+                  <span class="toggle-switch"></span>
+                </label>
+
+                <div v-if="formIsEphemeral" class="trip-fields">
+                  <div class="date-row">
+                    <div class="date-field">
+                      <label class="label">Start Date</label>
+                      <input type="date" v-model="formStartDate" class="date-input" />
+                    </div>
+                    <div class="date-field">
+                      <label class="label">End Date</label>
+                      <input type="date" v-model="formEndDate" class="date-input" />
+                    </div>
+                  </div>
+                  
+                  <label class="toggle-row small">
+                    <span class="toggle-label">Allow pre-trip expenses</span>
+                    <input type="checkbox" v-model="formAllowPreTrip" class="toggle-input" />
+                    <span class="toggle-switch"></span>
+                  </label>
+                </div>
               </div>
 
               <button type="submit" class="submit" :disabled="creating || !formName.trim()">
@@ -605,7 +681,145 @@ onMounted(() => setTimeout(() => visible.value = true, 50))
 
 .submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* Trip Badges */
+.trip-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.trip-badge.archived {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.trip-badge.upcoming {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.trip-badge.ended {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.trip-badge.active {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+/* Trip Mode Section */
+.trip-section {
+  background: var(--color-bg-secondary);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.toggle-row.small {
+  margin-top: 12px;
+}
+
+.toggle-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toggle-hint {
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--color-text-dimmed);
+}
+
+.toggle-row.small .toggle-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.toggle-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-switch {
+  width: 44px;
+  height: 24px;
+  background: #d1d5db;
+  border-radius: 100px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.toggle-input:checked + .toggle-switch {
+  background: var(--color-primary);
+}
+
+.toggle-input:checked + .toggle-switch::after {
+  transform: translateX(20px);
+}
+
+.trip-fields {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0,0,0,0.06);
+}
+
+.date-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.date-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.date-input {
+  padding: 10px 12px;
+  background: white;
+  border: 1px solid rgba(0,0,0,0.1);
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  font-family: inherit;
+}
+
+.date-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
 /* Transitions */
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>
+

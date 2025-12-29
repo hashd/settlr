@@ -103,14 +103,18 @@ const freqLabel: Record<string, string> = {
 function formatDate(d: string) {
   return new Date(d).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
 }
+
+// Expose openForm for parent components
+defineExpose({ openForm })
 </script>
+
 
 <template>
   <div class="recurring-section">
     <div class="section-header">
       <h3>🔄 Recurring Expenses</h3>
-      <button v-if="!showForm" class="btn-add" @click="openForm">+ Add</button>
     </div>
+
 
     <!-- Create Form -->
     <div v-if="showForm" class="form-card">

@@ -118,11 +118,9 @@ builder.objectType(Expense, {
     // Multiple payers support
     payers: t.field({
       type: [ExpensePayer],
-      resolve: async (expense) => {
-        return prisma.expensePayer.findMany({
-          where: { expenseId: expense.id },
-          include: { user: true },
-        });
+      resolve: async (expense, _args, ctx) => {
+        // Use DataLoader for batched loading
+        return ctx.loaders.payersByExpenseId.load(expense.id);
       },
     }),
     group: t.field({
@@ -133,25 +131,18 @@ builder.objectType(Expense, {
     }),
     shares: t.field({
       type: [ExpenseShare],
-      resolve: async (expense) => {
-        // Use pre-fetched shares if available
+      resolve: async (expense, _args, ctx) => {
+        // Use pre-fetched shares if available, otherwise use DataLoader
         if (expense.shares) return expense.shares;
-        return prisma.expenseShare.findMany({
-          where: { expenseId: expense.id },
-          include: { user: true },
-        });
+        return ctx.loaders.sharesByExpenseId.load(expense.id);
       },
     }),
     comments: t.field({
       type: [Comment],
-      resolve: async (expense) => {
-        // Use pre-fetched comments if available
+      resolve: async (expense, _args, ctx) => {
+        // Use pre-fetched comments if available, otherwise use DataLoader
         if (expense.comments) return expense.comments;
-        return prisma.comment.findMany({
-          where: { expenseId: expense.id },
-          orderBy: { createdAt: "asc" },
-          include: { user: true },
-        });
+        return ctx.loaders.commentsByExpenseId.load(expense.id);
       },
     }),
   }),
@@ -322,6 +313,39 @@ builder.mutationField("createExpense", (t) =>
     },
     resolve: async (_root, args, ctx) => {
       if (!ctx.userId) throw new Error("Not authenticated");
+
+      // Fetch group to check ephemeral settings
+      const group = await prisma.group.findUnique({
+        where: { id: args.groupId },
+      });
+
+      if (!group) throw new Error("Group not found");
+
+      // Check if group is archived
+      if (group.isArchived) {
+        throw new Error("Cannot add expenses to an archived group");
+      }
+
+      // Check ephemeral group date restrictions
+      if (group.isEphemeral) {
+        const now = new Date();
+
+        // Check if before start date
+        if (group.startDate && now < group.startDate) {
+          if (!group.allowPreTripExpenses) {
+            throw new Error(
+              "Cannot add expenses before the trip starts. Pre-trip expenses are disabled for this group."
+            );
+          }
+        }
+
+        // Check if after end date
+        if (group.endDate && now > group.endDate) {
+          throw new Error(
+            "Cannot add expenses after the trip has ended. Please unarchive the group first."
+          );
+        }
+      }
 
       const expense = await prisma.expense.create({
         data: {

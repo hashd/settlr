@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { schema, type GraphQLContext } from "./schema/index.js";
 import { extractToken, verifyToken } from "./lib/auth.js";
 import { syncUser } from "./lib/userSync.js";
+import { createLoaders } from "./lib/loaders.js";
 
 const yoga = createYoga({
   schema,
@@ -12,16 +13,19 @@ const yoga = createYoga({
     title: "Settlr API",
   },
   context: async ({ request }): Promise<GraphQLContext> => {
+    // Create fresh loaders for each request (request-scoped batching)
+    const loaders = createLoaders();
+
     const authHeader = request.headers.get("authorization");
     const token = extractToken(authHeader);
 
     if (!token) {
-      return {};
+      return { loaders };
     }
 
     const payload = await verifyToken(token);
     if (!payload) {
-      return {};
+      return { loaders };
     }
 
     // Sync user to our database on each authenticated request
@@ -39,6 +43,7 @@ const yoga = createYoga({
     return {
       userId: payload.sub,
       userEmail: payload.email,
+      loaders,
     };
   },
 });

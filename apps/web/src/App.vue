@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import AppHeader from '@/components/AppHeader.vue'
 import GlobalBackground from '@/components/GlobalBackground.vue'
 import ToastContainer from '@/components/ui/ToastContainer.vue'
+import NetworkStatus from '@/components/ui/NetworkStatus.vue'
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -20,12 +21,14 @@ onMounted(async () => {
 
 <template>
   <div id="app">
+    <NetworkStatus />
     <GlobalBackground />
     <AppHeader v-if="showHeader()" />
     <RouterView />
     <ToastContainer />
   </div>
 </template>
+
 
 <style>
 #app {
